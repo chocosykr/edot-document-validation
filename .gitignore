@@ -6,4 +6,5 @@ seed_credentials.enc
 seed_credentials.enc.key
 seed_credentials.enc.key.salt
 InputFiles/
+discovery_report_*.md
 .venv/

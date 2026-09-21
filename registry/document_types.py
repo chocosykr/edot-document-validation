@@ -21,26 +21,26 @@ def country_key(value: str) -> str:
     return COUNTRY_CODES.get(normalized, normalized)
 
 
-def document_type_key(value: str) -> str:
+DOCUMENT_TYPE_ALIASES = {
+    "INDOS": "IN_INDOS",
+    "INDOS CERTIFICATE": "IN_INDOS",
+    "INDIAN NATIONAL DATABASE OF SEAFARERS INDOS CERTIFICATE": "IN_INDOS",
+    "SEAFARERS IDENTITY DOCUMENT": "IN_SID",
+    "SEAFARERS IDENTITY DOCUMENT SID": "IN_SID",
+    "SID": "IN_SID",
+    "CONTINUOUS DISCHARGE CERTIFICATE": "IN_CDC",
+    "CDC": "IN_CDC",
+    "CERTIFICATE OF COMPETENCY": "IN_COC",
+    "COC": "IN_COC",
+}
+
+
+def document_type_key(value: str) -> str | None:
     normalized = re.sub(r"[^A-Z0-9]+", " ", str(value or "").upper()).strip()
-    if "INDOS" in normalized or "NATIONAL DATABASE OF SEAFARERS" in normalized:
-        return "IN_INDOS"
-    if "SEAFARERS IDENTITY" in normalized or normalized == "SID":
-        return "IN_SID"
-    if "CDC" in normalized or "CONTINUOUS DISCHARGE" in normalized:
-        return "IN_CDC"
-    if "CERTIFICATE OF COMPETENCY" in normalized or normalized == "COC":
-        return "IN_COC"
-    return "UNKNOWN"
+    return DOCUMENT_TYPE_ALIASES.get(normalized)
 
 
 def profile_document_type_key(profile: dict) -> str:
-    value = profile.get("document_type_key")
-    if value:
-        normalized = str(value).upper()
-        if normalized.startswith("IN_"):
-            return normalized
-        inferred = document_type_key(normalized)
-        if inferred != "UNKNOWN":
-            return inferred
+    # The model-emitted key is advisory only. Canonical routing is derived
+    # exclusively from the classified document_type field.
     return document_type_key(profile.get("document_type", ""))

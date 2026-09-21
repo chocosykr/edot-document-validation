@@ -218,6 +218,40 @@ class TestValidationEngine(unittest.TestCase):
             if os.path.exists(db_path):
                 os.remove(db_path)
 
+    def test_empty_comparison_response_has_unknown_document_result(self):
+        db_path = "test_engine_empty_comparison.db"
+        try:
+            registry = MethodRegistry(db_path=db_path)
+            method = _active_method("M_EMPTY_COMPARISON")
+            method.expected_responses = {
+                "comparison_mode": "field_match",
+                "method_schema": CURRENT_METHOD_SCHEMA,
+                "document_type_key": "IN_CDC",
+            }
+            method.required_inputs = ["document_number"]
+            registry.register_method(method)
+
+            runner = MagicMock()
+            runner.execute_method.return_value = ExecutionResult(
+                decision_status=ExecutionDecisionStatus.UNCERTAIN,
+                evidence={"http_status": 200},
+                raw_response="",
+            )
+            engine = ValidationEngine(
+                registry=registry,
+                runner=runner,
+                credential_provider=lambda: {"document_number": "ABC123"},
+            )
+
+            decision = engine.validate(_profile())
+
+            self.assertEqual(decision.decision_status, DecisionStatus.TECHNICAL_FAILURE)
+            self.assertEqual(decision.document_result, DocumentResult.UNKNOWN)
+            self.assertEqual(decision.evidence_quality, EvidenceQuality.NONE)
+        finally:
+            if os.path.exists(db_path):
+                os.remove(db_path)
+
     # 6. Generated method fails validation -----------------------------------
 
     @patch("engine.validation_engine.lookup_source")

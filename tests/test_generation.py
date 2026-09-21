@@ -2,8 +2,19 @@ import unittest
 from unittest.mock import patch
 from registry.models import MethodStatus, MethodType
 from generation.generator import generate_candidate_method
+from registry.document_types import document_type_key, profile_document_type_key
 
 class TestMethodGeneration(unittest.TestCase):
+    def test_document_type_key_uses_allowlist_and_ignores_model_key(self):
+        self.assertEqual(document_type_key("Seafarers' Identity Document (SID)"), "IN_SID")
+        self.assertIsNone(document_type_key("INDOS-like credential"))
+        self.assertEqual(
+            profile_document_type_key({
+                "document_type": "Seafarers' Identity Document",
+                "document_type_key": "INDOS_CERTIFICATE",
+            }),
+            "IN_SID",
+        )
     def test_search_type_document_mapping_is_rejected(self):
         js = '''
         var url = "/checker";

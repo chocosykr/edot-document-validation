@@ -49,6 +49,6 @@ def lookup_source(redacted_profile: dict) -> list[dict]:
             for item in (row.get("supported_doc_types") or "").split(",")
             if item.strip()
         }
-        if document_key != "UNKNOWN" and document_key in supported:
+        if document_key is not None and document_key in supported:
             results.append(row)
     return results

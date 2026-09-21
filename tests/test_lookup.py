@@ -61,5 +61,13 @@ class TestLookup(unittest.TestCase):
         results = lookup_source({"issuing_country": "INDIA", "document_type": "Unrecognized Credential"})
         self.assertEqual(results, [])
 
+    def test_llm_key_is_ignored_for_sid_profile(self):
+        results = lookup_source({
+            "issuing_country": "INDIA",
+            "document_type": "Seafarers' Identity Document (SID)",
+            "document_type_key": "INDOS_CERTIFICATE",
+        })
+        self.assertEqual(results, [])
+
 if __name__ == "__main__":
     unittest.main()

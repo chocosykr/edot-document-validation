@@ -1070,7 +1070,7 @@ def generate_candidate_method(
             }
             llm_mapping["required_inputs"] = [
                 field for field in (llm_mapping.get("required_inputs") or [])
-                if field not in {"document_type"}
+                if field not in {"document_type", "document_type_key"}
             ]
 
         param_mapping, required_inputs = _resolve_param_mapping(llm_mapping, xhr_contract)

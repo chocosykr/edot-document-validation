@@ -17,7 +17,7 @@ class MethodType(str, Enum):
     MANUAL = "MANUAL"
 
 
-CURRENT_METHOD_SCHEMA = "field-comparison-v2"
+CURRENT_METHOD_SCHEMA = "field-comparison-v3"
 
 class ValidationMethod(BaseModel):
     method_id: str
