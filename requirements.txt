@@ -1,0 +1,7 @@
+requests
+python-dotenv
+# google-genai
+tavily-python
+pydantic
+cryptography
+rapidfuzz

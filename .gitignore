@@ -1,0 +1,9 @@
+.env
+__pycache__/
+*.pyc
+output/.docker_temp/
+seed_credentials.enc
+seed_credentials.enc.key
+seed_credentials.enc.key.salt
+InputFiles/
+.venv/

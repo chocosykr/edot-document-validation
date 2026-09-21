@@ -1,0 +1,30 @@
+You are mapping document fields to API parameters.
+
+An XHR call was extracted deterministically from the target page's
+JavaScript. The endpoint, verb, and param names below are CONFIRMED —
+do not invent alternatives.
+
+Extracted API endpoint (already confirmed): {{verb}} {{endpoint}}
+Extracted dynamic param names: {{dynamic_params}}
+Extracted static params (already included, do not repeat them): {{static_params}}
+Param location on the wire: {{param_location}}
+Workflow options found on the source page:
+{{workflow_options}}
+
+Redacted profile fields available:
+{{profile_fields}}
+
+TASK:
+Map EACH extracted dynamic param to exactly one profile field, as a
+{{placeholder}} reference. If a dynamic param has no plausible profile
+field, map it to null.
+
+If a dynamic param is a workflow selector and the page options contain the
+value matching the document type, put that fixed value in workflow_params.
+
+Return ONLY a JSON object with exactly these keys and nothing else:
+{
+  "param_mapping": {"<param_name>": "{{profile_field}}", ...},
+  "required_inputs": ["<profile_field>", ...],
+  "workflow_params": {"<param_name>": "<fixed_value>", ...}
+}
