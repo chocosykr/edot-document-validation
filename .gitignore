@@ -6,7 +6,7 @@ output/.docker_temp/
 agent_debug_log.json
 person_folders/
 probe_evidence/
-.ocr_cache/seed_credentials.enc
+seed_credentials.enc
 seed_credentials.enc.key
 seed_credentials.enc.key.salt
 InputFiles/
@@ -14,7 +14,5 @@ discovery_report_*.md
 .venv/
 .ocr_cache/
 *.db.bak-*
-.ocr_cache/
-*.db.bak-*test_validator_sig.db
-test_engine_*.db
-test_validator_registry.db
+test_*.db
+test_validator_sig.db
