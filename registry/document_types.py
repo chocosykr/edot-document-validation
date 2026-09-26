@@ -13,6 +13,8 @@ COUNTRY_CODES = {
     "UK": "GB",
     "UNITED STATES": "US",
     "USA": "US",
+    "MYANMAR": "MM",
+    "MM": "MM",
 }
 
 
@@ -34,13 +36,37 @@ DOCUMENT_TYPE_ALIASES = {
     "COC": "IN_COC",
 }
 
+# Document types whose registry is defined PER COUNTRY: an Indian COC and a
+# Myanmar COC are verified by different national authorities, so they must
+# never share a document_type_key. (INDOS is deliberately NOT in this set —
+# it is intrinsically an Indian database, so IN_INDOS is the only correct key.)
+COUNTRY_SCOPED_SUFFIXES = {
+    "IN_COC": "COC",
+    "IN_CDC": "CDC",
+    "IN_SID": "SID",
+}
+
 
 def document_type_key(value: str) -> str | None:
     normalized = re.sub(r"[^A-Z0-9]+", " ", str(value or "").upper()).strip()
     return DOCUMENT_TYPE_ALIASES.get(normalized)
 
 
-def profile_document_type_key(profile: dict) -> str:
+def profile_document_type_key(profile: dict) -> str | None:
     # The model-emitted key is advisory only. Canonical routing is derived
     # exclusively from the classified document_type field.
-    return document_type_key(profile.get("document_type", ""))
+    base = document_type_key(profile.get("document_type", ""))
+    if base is None:
+        return None
+
+    # Country-scope the per-country document types: COC/CDC/SID keys bind to
+    # the ISSUING country (Myanmar COC -> MM_COC, not the India-era IN_COC).
+    # Without a country the India-era default is kept for backward
+    # compatibility with existing single-country (India) flows.
+    suffix = COUNTRY_SCOPED_SUFFIXES.get(base)
+    if suffix:
+        country = str(profile.get("issuing_country") or "").strip()
+        if country:
+            return f"{country_key(country)}_{suffix}"
+
+    return base

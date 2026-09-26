@@ -1,4 +1,80 @@
+|-- (OLD)system_architecture.md
 |-- .docker_temp
+    |-- dbg
+        |-- input.json
+    |-- exec_18iezjkx
+        |-- __pycache__
+            |-- llm_client.cpython-310.pyc
+    |-- exec_1cjxvzgd
+        |-- __pycache__
+            |-- llm_client.cpython-310.pyc
+    |-- exec_1gz3vk9r
+        |-- __pycache__
+            |-- llm_client.cpython-310.pyc
+    |-- exec_24er8em_
+        |-- __pycache__
+            |-- llm_client.cpython-310.pyc
+    |-- exec_2hvnfc7z
+        |-- __pycache__
+            |-- llm_client.cpython-310.pyc
+    |-- exec_2wnswgey
+        |-- __pycache__
+            |-- llm_client.cpython-310.pyc
+    |-- exec_32xf1uhi
+        |-- __pycache__
+            |-- llm_client.cpython-310.pyc
+    |-- exec_3a5lb77u
+        |-- __pycache__
+            |-- llm_client.cpython-310.pyc
+    |-- exec_5cfohz3x
+        |-- __pycache__
+            |-- llm_client.cpython-310.pyc
+    |-- exec__em8niy_
+        |-- __pycache__
+            |-- llm_client.cpython-310.pyc
+    |-- exec_avi5ezbc
+        |-- __pycache__
+            |-- llm_client.cpython-310.pyc
+    |-- exec_bbzi6r3f
+        |-- __pycache__
+            |-- llm_client.cpython-310.pyc
+    |-- exec_c6xm0zby
+        |-- __pycache__
+            |-- llm_client.cpython-310.pyc
+    |-- exec_cobhv_zy
+        |-- __pycache__
+            |-- llm_client.cpython-310.pyc
+    |-- exec_dgxhlxa3
+        |-- __pycache__
+            |-- llm_client.cpython-310.pyc
+    |-- exec_eawqifjk
+        |-- __pycache__
+            |-- llm_client.cpython-310.pyc
+    |-- exec_fn59q34a
+        |-- __pycache__
+            |-- llm_client.cpython-310.pyc
+    |-- exec_i8b1jtl3
+        |-- __pycache__
+            |-- llm_client.cpython-310.pyc
+    |-- exec_pfwp2szz
+        |-- executor.py
+        |-- input.json
+        |-- output.json
+    |-- exec_qgyd2k51
+        |-- __pycache__
+            |-- llm_client.cpython-310.pyc
+    |-- exec_r4wj0aer
+        |-- __pycache__
+            |-- llm_client.cpython-310.pyc
+    |-- exec_sf2j0e54
+        |-- __pycache__
+            |-- llm_client.cpython-310.pyc
+    |-- exec_u7otieu5
+        |-- __pycache__
+            |-- llm_client.cpython-310.pyc
+    |-- exec_zupcpay6
+        |-- __pycache__
+            |-- llm_client.cpython-310.pyc
 |-- .env
 |-- .gitignore
 |-- .venv
@@ -19,6 +95,7 @@
         |-- pip
         |-- pip3
         |-- pip3.12
+        |-- playwright
         |-- python
         |-- python3
         |-- python3.12
@@ -26,6 +103,10 @@
         |-- websockets
     |-- include
         |-- python3.12
+        |-- site
+            |-- python3.12
+                |-- greenlet
+                    |-- greenlet.h
     |-- lib
         |-- python3.12
             |-- site-packages
@@ -2113,6 +2194,142 @@
                     |-- licenses
                         |-- LICENSE
                     |-- top_level.txt
+                |-- greenlet
+                    |-- CObjects.cpp
+                    |-- PyGreenlet.cpp
+                    |-- PyGreenlet.hpp
+                    |-- PyGreenletUnswitchable.cpp
+                    |-- PyModule.cpp
+                    |-- TBrokenGreenlet.cpp
+                    |-- TExceptionState.cpp
+                    |-- TGreenlet.cpp
+                    |-- TGreenlet.hpp
+                    |-- TGreenletGlobals.cpp
+                    |-- TMainGreenlet.cpp
+                    |-- TPythonState.cpp
+                    |-- TStackState.cpp
+                    |-- TThreadState.hpp
+                    |-- TThreadStateCreator.hpp
+                    |-- TThreadStateDestroy.cpp
+                    |-- TUserGreenlet.cpp
+                    |-- __init__.py
+                    |-- __pycache__
+                        |-- __init__.cpython-312.pyc
+                    |-- _greenlet.cpython-312-x86_64-linux-gnu.so
+                    |-- greenlet.cpp
+                    |-- greenlet.h
+                    |-- greenlet_allocator.hpp
+                    |-- greenlet_compiler_compat.hpp
+                    |-- greenlet_cpython_compat.hpp
+                    |-- greenlet_exceptions.hpp
+                    |-- greenlet_internal.hpp
+                    |-- greenlet_msvc_compat.hpp
+                    |-- greenlet_refs.hpp
+                    |-- greenlet_slp_switch.hpp
+                    |-- greenlet_thread_support.hpp
+                    |-- platform
+                        |-- __init__.py
+                        |-- __pycache__
+                            |-- __init__.cpython-312.pyc
+                        |-- setup_switch_x64_masm.cmd
+                        |-- switch_aarch64_gcc.h
+                        |-- switch_alpha_unix.h
+                        |-- switch_amd64_unix.h
+                        |-- switch_arm32_gcc.h
+                        |-- switch_arm32_ios.h
+                        |-- switch_arm64_masm.asm
+                        |-- switch_arm64_masm.obj
+                        |-- switch_arm64_msvc.h
+                        |-- switch_csky_gcc.h
+                        |-- switch_loongarch64_linux.h
+                        |-- switch_m68k_gcc.h
+                        |-- switch_mips_unix.h
+                        |-- switch_ppc64_aix.h
+                        |-- switch_ppc64_linux.h
+                        |-- switch_ppc_aix.h
+                        |-- switch_ppc_linux.h
+                        |-- switch_ppc_macosx.h
+                        |-- switch_ppc_unix.h
+                        |-- switch_riscv_unix.h
+                        |-- switch_s390_unix.h
+                        |-- switch_sh_gcc.h
+                        |-- switch_sparc_sun_gcc.h
+                        |-- switch_x32_unix.h
+                        |-- switch_x64_masm.asm
+                        |-- switch_x64_masm.obj
+                        |-- switch_x64_msvc.h
+                        |-- switch_x86_msvc.h
+                        |-- switch_x86_unix.h
+                    |-- slp_platformselect.h
+                    |-- tests
+                        |-- __init__.py
+                        |-- __pycache__
+                            |-- __init__.cpython-312.pyc
+                            |-- fail_c_stack_refs_suspended_gc.cpython-312.pyc
+                            |-- fail_clearing_run_switches.cpython-312.pyc
+                            |-- fail_cpp_exception.cpython-312.pyc
+                            |-- fail_initialstub_already_started.cpython-312.pyc
+                            |-- fail_issue_515_freethread_gc.cpython-312.pyc
+                            |-- fail_slp_switch.cpython-312.pyc
+                            |-- fail_switch_critical_section.cpython-312.pyc
+                            |-- fail_switch_three_greenlets.cpython-312.pyc
+                            |-- fail_switch_three_greenlets2.cpython-312.pyc
+                            |-- fail_switch_two_greenlets.cpython-312.pyc
+                            |-- leakcheck.cpython-312.pyc
+                            |-- test_contextvars.cpython-312.pyc
+                            |-- test_cpp.cpython-312.pyc
+                            |-- test_extension_interface.cpython-312.pyc
+                            |-- test_gc.cpython-312.pyc
+                            |-- test_generator.cpython-312.pyc
+                            |-- test_generator_nested.cpython-312.pyc
+                            |-- test_greenlet.cpython-312.pyc
+                            |-- test_greenlet_trash.cpython-312.pyc
+                            |-- test_interpreter_shutdown.cpython-312.pyc
+                            |-- test_leaks.cpython-312.pyc
+                            |-- test_stack_saved.cpython-312.pyc
+                            |-- test_throw.cpython-312.pyc
+                            |-- test_tracing.cpython-312.pyc
+                            |-- test_version.cpython-312.pyc
+                            |-- test_weakref.cpython-312.pyc
+                        |-- _test_extension.c
+                        |-- _test_extension.cpython-312-x86_64-linux-gnu.so
+                        |-- _test_extension_cpp.cpp
+                        |-- _test_extension_cpp.cpython-312-x86_64-linux-gnu.so
+                        |-- fail_c_stack_refs_suspended_gc.py
+                        |-- fail_clearing_run_switches.py
+                        |-- fail_cpp_exception.py
+                        |-- fail_initialstub_already_started.py
+                        |-- fail_issue_515_freethread_gc.py
+                        |-- fail_slp_switch.py
+                        |-- fail_switch_critical_section.py
+                        |-- fail_switch_three_greenlets.py
+                        |-- fail_switch_three_greenlets2.py
+                        |-- fail_switch_two_greenlets.py
+                        |-- leakcheck.py
+                        |-- test_contextvars.py
+                        |-- test_cpp.py
+                        |-- test_extension_interface.py
+                        |-- test_gc.py
+                        |-- test_generator.py
+                        |-- test_generator_nested.py
+                        |-- test_greenlet.py
+                        |-- test_greenlet_trash.py
+                        |-- test_interpreter_shutdown.py
+                        |-- test_leaks.py
+                        |-- test_stack_saved.py
+                        |-- test_throw.py
+                        |-- test_tracing.py
+                        |-- test_version.py
+                        |-- test_weakref.py
+                |-- greenlet-3.5.6.dist-info
+                    |-- INSTALLER
+                    |-- METADATA
+                    |-- RECORD
+                    |-- WHEEL
+                    |-- licenses
+                        |-- LICENSE
+                        |-- LICENSE.PSF
+                    |-- top_level.txt
                 |-- h11
                     |-- __init__.py
                     |-- __pycache__
@@ -4078,6 +4295,303 @@
                                         |-- LICENSE
                                     |-- urllib3
                                         |-- LICENSE.txt
+                |-- playwright
+                    |-- __init__.py
+                    |-- __main__.py
+                    |-- __pycache__
+                        |-- __init__.cpython-312.pyc
+                        |-- __main__.cpython-312.pyc
+                        |-- _repo_version.cpython-312.pyc
+                    |-- _impl
+                        |-- __init__.py
+                        |-- __pycache__
+                            |-- __init__.cpython-312.pyc
+                            |-- _api_structures.cpython-312.pyc
+                            |-- _artifact.cpython-312.pyc
+                            |-- _assertions.cpython-312.pyc
+                            |-- _async_base.cpython-312.pyc
+                            |-- _browser.cpython-312.pyc
+                            |-- _browser_context.cpython-312.pyc
+                            |-- _browser_type.cpython-312.pyc
+                            |-- _cdp_session.cpython-312.pyc
+                            |-- _clock.cpython-312.pyc
+                            |-- _connection.cpython-312.pyc
+                            |-- _console_message.cpython-312.pyc
+                            |-- _credentials.cpython-312.pyc
+                            |-- _debugger.cpython-312.pyc
+                            |-- _dialog.cpython-312.pyc
+                            |-- _disposable.cpython-312.pyc
+                            |-- _download.cpython-312.pyc
+                            |-- _driver.cpython-312.pyc
+                            |-- _element_handle.cpython-312.pyc
+                            |-- _errors.cpython-312.pyc
+                            |-- _event_context_manager.cpython-312.pyc
+                            |-- _fetch.cpython-312.pyc
+                            |-- _file_chooser.cpython-312.pyc
+                            |-- _form_data.cpython-312.pyc
+                            |-- _frame.cpython-312.pyc
+                            |-- _glob.cpython-312.pyc
+                            |-- _greenlets.cpython-312.pyc
+                            |-- _har_router.cpython-312.pyc
+                            |-- _helper.cpython-312.pyc
+                            |-- _impl_to_api_mapping.cpython-312.pyc
+                            |-- _input.cpython-312.pyc
+                            |-- _js_handle.cpython-312.pyc
+                            |-- _json_pipe.cpython-312.pyc
+                            |-- _local_utils.cpython-312.pyc
+                            |-- _locator.cpython-312.pyc
+                            |-- _map.cpython-312.pyc
+                            |-- _network.cpython-312.pyc
+                            |-- _object_factory.cpython-312.pyc
+                            |-- _page.cpython-312.pyc
+                            |-- _path_utils.cpython-312.pyc
+                            |-- _playwright.cpython-312.pyc
+                            |-- _screencast.cpython-312.pyc
+                            |-- _selectors.cpython-312.pyc
+                            |-- _set_input_files_helpers.cpython-312.pyc
+                            |-- _str_utils.cpython-312.pyc
+                            |-- _stream.cpython-312.pyc
+                            |-- _sync_base.cpython-312.pyc
+                            |-- _tracing.cpython-312.pyc
+                            |-- _transport.cpython-312.pyc
+                            |-- _video.cpython-312.pyc
+                            |-- _waiter.cpython-312.pyc
+                            |-- _web_error.cpython-312.pyc
+                            |-- _web_storage.cpython-312.pyc
+                            |-- _writable_stream.cpython-312.pyc
+                        |-- __pyinstaller
+                            |-- __init__.py
+                            |-- __pycache__
+                                |-- __init__.cpython-312.pyc
+                                |-- hook-playwright.async_api.cpython-312.pyc
+                                |-- hook-playwright.sync_api.cpython-312.pyc
+                            |-- hook-playwright.async_api.py
+                            |-- hook-playwright.sync_api.py
+                        |-- _api_structures.py
+                        |-- _artifact.py
+                        |-- _assertions.py
+                        |-- _async_base.py
+                        |-- _browser.py
+                        |-- _browser_context.py
+                        |-- _browser_type.py
+                        |-- _cdp_session.py
+                        |-- _clock.py
+                        |-- _connection.py
+                        |-- _console_message.py
+                        |-- _credentials.py
+                        |-- _debugger.py
+                        |-- _dialog.py
+                        |-- _disposable.py
+                        |-- _download.py
+                        |-- _driver.py
+                        |-- _element_handle.py
+                        |-- _errors.py
+                        |-- _event_context_manager.py
+                        |-- _fetch.py
+                        |-- _file_chooser.py
+                        |-- _form_data.py
+                        |-- _frame.py
+                        |-- _glob.py
+                        |-- _greenlets.py
+                        |-- _har_router.py
+                        |-- _helper.py
+                        |-- _impl_to_api_mapping.py
+                        |-- _input.py
+                        |-- _js_handle.py
+                        |-- _json_pipe.py
+                        |-- _local_utils.py
+                        |-- _locator.py
+                        |-- _map.py
+                        |-- _network.py
+                        |-- _object_factory.py
+                        |-- _page.py
+                        |-- _path_utils.py
+                        |-- _playwright.py
+                        |-- _screencast.py
+                        |-- _selectors.py
+                        |-- _set_input_files_helpers.py
+                        |-- _str_utils.py
+                        |-- _stream.py
+                        |-- _sync_base.py
+                        |-- _tracing.py
+                        |-- _transport.py
+                        |-- _video.py
+                        |-- _waiter.py
+                        |-- _web_error.py
+                        |-- _web_storage.py
+                        |-- _writable_stream.py
+                    |-- _repo_version.py
+                    |-- async_api
+                        |-- __init__.py
+                        |-- __pycache__
+                            |-- __init__.cpython-312.pyc
+                            |-- _context_manager.cpython-312.pyc
+                            |-- _generated.cpython-312.pyc
+                        |-- _context_manager.py
+                        |-- _generated.py
+                    |-- driver
+                        |-- LICENSE
+                        |-- README.md
+                        |-- node
+                        |-- package
+                            |-- LICENSE
+                            |-- NOTICE
+                            |-- README.md
+                            |-- ThirdPartyNotices.txt
+                            |-- bin
+                                |-- install_media_pack.ps1
+                                |-- install_webkit_wsl.ps1
+                                |-- reinstall_chrome_beta_linux.sh
+                                |-- reinstall_chrome_beta_mac.sh
+                                |-- reinstall_chrome_beta_win.ps1
+                                |-- reinstall_chrome_stable_linux.sh
+                                |-- reinstall_chrome_stable_mac.sh
+                                |-- reinstall_chrome_stable_win.ps1
+                                |-- reinstall_msedge_beta_linux.sh
+                                |-- reinstall_msedge_beta_mac.sh
+                                |-- reinstall_msedge_beta_win.ps1
+                                |-- reinstall_msedge_dev_linux.sh
+                                |-- reinstall_msedge_dev_mac.sh
+                                |-- reinstall_msedge_dev_win.ps1
+                                |-- reinstall_msedge_stable_linux.sh
+                                |-- reinstall_msedge_stable_mac.sh
+                                |-- reinstall_msedge_stable_win.ps1
+                            |-- browsers.json
+                            |-- cli.js
+                            |-- index.d.ts
+                            |-- index.js
+                            |-- index.mjs
+                            |-- lib
+                                |-- bootstrap.js
+                                |-- coreBundle.js
+                                |-- entry
+                                    |-- cliDaemon.js
+                                    |-- dashboardApp.js
+                                    |-- mcp.js
+                                    |-- oopBrowserDownload.js
+                                |-- package.js
+                                |-- server
+                                    |-- chromium
+                                        |-- appIcon.png
+                                    |-- electron
+                                        |-- loader.js
+                                |-- serverRegistry.js
+                                |-- serverRegistry.js.LICENSE
+                                |-- tools
+                                    |-- cli-client
+                                        |-- channelSessions.js
+                                        |-- cli.js
+                                        |-- help.json
+                                        |-- minimist.js
+                                        |-- output.js
+                                        |-- program.js
+                                        |-- registry.js
+                                        |-- session.js
+                                    |-- dashboard
+                                        |-- appIcon.png
+                                    |-- skills
+                                        |-- playwright-cli
+                                            |-- SKILL.md
+                                            |-- references
+                                                |-- element-attributes.md
+                                                |-- playwright-tests.md
+                                                |-- request-mocking.md
+                                                |-- running-code.md
+                                                |-- session-management.md
+                                                |-- storage-state.md
+                                                |-- test-generation.md
+                                                |-- tracing.md
+                                                |-- video-recording.md
+                                        |-- playwright-component-testing
+                                            |-- SKILL.md
+                                            |-- references
+                                                |-- gallery-spec.md
+                                                |-- migration.md
+                                                |-- react.md
+                                                |-- typing.md
+                                                |-- vue.md
+                                        |-- playwright-trace
+                                            |-- SKILL.md
+                                    |-- utils
+                                        |-- extension.js
+                                        |-- socketConnection.js
+                                |-- utilsBundle.js
+                                |-- utilsBundle.js.LICENSE
+                                |-- vite
+                                    |-- dashboard
+                                        |-- assets
+                                            |-- codeMirrorModule--QdMvsKi.css
+                                            |-- codeMirrorModule-CQ8RZGBm.js
+                                            |-- codicon-DCmgc-ay.ttf
+                                            |-- firefox-1bWoP6pv.svg
+                                            |-- firefox-beta-k3eOH_eK.svg
+                                            |-- firefox-nightly-Cp5nfeDT.svg
+                                            |-- index-AwgwcYie.css
+                                            |-- index-hRvO4yU2.js
+                                            |-- safari-na3_-uQk.svg
+                                        |-- index.html
+                                        |-- playwright-logo.svg
+                                    |-- htmlReport
+                                        |-- index.html
+                                        |-- report.css
+                                        |-- report.js
+                                    |-- recorder
+                                        |-- assets
+                                            |-- codeMirrorModule--QdMvsKi.css
+                                            |-- codeMirrorModule-CVQWJZAA.js
+                                            |-- codicon-DCmgc-ay.ttf
+                                            |-- index-BZpYJZ-P.css
+                                            |-- index-hrlLqLtq.js
+                                        |-- index.html
+                                        |-- playwright-logo.svg
+                                    |-- traceViewer
+                                        |-- assets
+                                            |-- codeMirrorModule-BbkfBe3n.js
+                                            |-- defaultSettingsView-Ds6CBOo0.js
+                                            |-- urlMatch-L3liM589.js
+                                            |-- xtermModule-DywYcAf8.js
+                                        |-- codeMirrorModule.-QdMvsKi.css
+                                        |-- codicon.DCmgc-ay.ttf
+                                        |-- defaultSettingsView.Bqk9acqE.css
+                                        |-- index.B4cLoZK3.js
+                                        |-- index.B_TqY17P.css
+                                        |-- index.html
+                                        |-- manifest.webmanifest
+                                        |-- playwright-logo.svg
+                                        |-- snapshot.B_Jk1wbt.js
+                                        |-- snapshot.html
+                                        |-- sw.bundle.js
+                                        |-- uiMode.CU5KtEkS.js
+                                        |-- uiMode.CyMfwkXJ.css
+                                        |-- uiMode.html
+                                        |-- xtermModule.kHJ-D0s7.css
+                                |-- webp_codec.LICENSE
+                                |-- webp_codec.wasm
+                                |-- xdg-open
+                            |-- package.json
+                            |-- types
+                                |-- protocol.d.ts
+                                |-- structs.d.ts
+                                |-- types.d.ts
+                    |-- py.typed
+                    |-- sync_api
+                        |-- __init__.py
+                        |-- __pycache__
+                            |-- __init__.cpython-312.pyc
+                            |-- _context_manager.cpython-312.pyc
+                            |-- _generated.cpython-312.pyc
+                        |-- _context_manager.py
+                        |-- _generated.py
+                |-- playwright-1.63.0.dist-info
+                    |-- INSTALLER
+                    |-- METADATA
+                    |-- RECORD
+                    |-- REQUESTED
+                    |-- WHEEL
+                    |-- entry_points.txt
+                    |-- licenses
+                        |-- LICENSE
+                    |-- top_level.txt
                 |-- pyasn1
                     |-- __init__.py
                     |-- __pycache__
@@ -4715,6 +5229,33 @@
                     |-- WHEEL
                     |-- licenses
                         |-- LICENSE
+                |-- pyee
+                    |-- __init__.py
+                    |-- __pycache__
+                        |-- __init__.cpython-312.pyc
+                        |-- asyncio.cpython-312.pyc
+                        |-- base.cpython-312.pyc
+                        |-- cls.cpython-312.pyc
+                        |-- executor.cpython-312.pyc
+                        |-- trio.cpython-312.pyc
+                        |-- twisted.cpython-312.pyc
+                        |-- uplift.cpython-312.pyc
+                    |-- asyncio.py
+                    |-- base.py
+                    |-- cls.py
+                    |-- executor.py
+                    |-- py.typed
+                    |-- trio.py
+                    |-- twisted.py
+                    |-- uplift.py
+                |-- pyee-13.0.1.dist-info
+                    |-- INSTALLER
+                    |-- METADATA
+                    |-- RECORD
+                    |-- WHEEL
+                    |-- licenses
+                        |-- LICENSE
+                    |-- top_level.txt
                 |-- pyjwt-2.14.0.dist-info
                     |-- INSTALLER
                     |-- METADATA
@@ -7696,6 +8237,142 @@
                     |-- licenses
                         |-- LICENSE
                     |-- top_level.txt
+                |-- greenlet
+                    |-- CObjects.cpp
+                    |-- PyGreenlet.cpp
+                    |-- PyGreenlet.hpp
+                    |-- PyGreenletUnswitchable.cpp
+                    |-- PyModule.cpp
+                    |-- TBrokenGreenlet.cpp
+                    |-- TExceptionState.cpp
+                    |-- TGreenlet.cpp
+                    |-- TGreenlet.hpp
+                    |-- TGreenletGlobals.cpp
+                    |-- TMainGreenlet.cpp
+                    |-- TPythonState.cpp
+                    |-- TStackState.cpp
+                    |-- TThreadState.hpp
+                    |-- TThreadStateCreator.hpp
+                    |-- TThreadStateDestroy.cpp
+                    |-- TUserGreenlet.cpp
+                    |-- __init__.py
+                    |-- __pycache__
+                        |-- __init__.cpython-312.pyc
+                    |-- _greenlet.cpython-312-x86_64-linux-gnu.so
+                    |-- greenlet.cpp
+                    |-- greenlet.h
+                    |-- greenlet_allocator.hpp
+                    |-- greenlet_compiler_compat.hpp
+                    |-- greenlet_cpython_compat.hpp
+                    |-- greenlet_exceptions.hpp
+                    |-- greenlet_internal.hpp
+                    |-- greenlet_msvc_compat.hpp
+                    |-- greenlet_refs.hpp
+                    |-- greenlet_slp_switch.hpp
+                    |-- greenlet_thread_support.hpp
+                    |-- platform
+                        |-- __init__.py
+                        |-- __pycache__
+                            |-- __init__.cpython-312.pyc
+                        |-- setup_switch_x64_masm.cmd
+                        |-- switch_aarch64_gcc.h
+                        |-- switch_alpha_unix.h
+                        |-- switch_amd64_unix.h
+                        |-- switch_arm32_gcc.h
+                        |-- switch_arm32_ios.h
+                        |-- switch_arm64_masm.asm
+                        |-- switch_arm64_masm.obj
+                        |-- switch_arm64_msvc.h
+                        |-- switch_csky_gcc.h
+                        |-- switch_loongarch64_linux.h
+                        |-- switch_m68k_gcc.h
+                        |-- switch_mips_unix.h
+                        |-- switch_ppc64_aix.h
+                        |-- switch_ppc64_linux.h
+                        |-- switch_ppc_aix.h
+                        |-- switch_ppc_linux.h
+                        |-- switch_ppc_macosx.h
+                        |-- switch_ppc_unix.h
+                        |-- switch_riscv_unix.h
+                        |-- switch_s390_unix.h
+                        |-- switch_sh_gcc.h
+                        |-- switch_sparc_sun_gcc.h
+                        |-- switch_x32_unix.h
+                        |-- switch_x64_masm.asm
+                        |-- switch_x64_masm.obj
+                        |-- switch_x64_msvc.h
+                        |-- switch_x86_msvc.h
+                        |-- switch_x86_unix.h
+                    |-- slp_platformselect.h
+                    |-- tests
+                        |-- __init__.py
+                        |-- __pycache__
+                            |-- __init__.cpython-312.pyc
+                            |-- fail_c_stack_refs_suspended_gc.cpython-312.pyc
+                            |-- fail_clearing_run_switches.cpython-312.pyc
+                            |-- fail_cpp_exception.cpython-312.pyc
+                            |-- fail_initialstub_already_started.cpython-312.pyc
+                            |-- fail_issue_515_freethread_gc.cpython-312.pyc
+                            |-- fail_slp_switch.cpython-312.pyc
+                            |-- fail_switch_critical_section.cpython-312.pyc
+                            |-- fail_switch_three_greenlets.cpython-312.pyc
+                            |-- fail_switch_three_greenlets2.cpython-312.pyc
+                            |-- fail_switch_two_greenlets.cpython-312.pyc
+                            |-- leakcheck.cpython-312.pyc
+                            |-- test_contextvars.cpython-312.pyc
+                            |-- test_cpp.cpython-312.pyc
+                            |-- test_extension_interface.cpython-312.pyc
+                            |-- test_gc.cpython-312.pyc
+                            |-- test_generator.cpython-312.pyc
+                            |-- test_generator_nested.cpython-312.pyc
+                            |-- test_greenlet.cpython-312.pyc
+                            |-- test_greenlet_trash.cpython-312.pyc
+                            |-- test_interpreter_shutdown.cpython-312.pyc
+                            |-- test_leaks.cpython-312.pyc
+                            |-- test_stack_saved.cpython-312.pyc
+                            |-- test_throw.cpython-312.pyc
+                            |-- test_tracing.cpython-312.pyc
+                            |-- test_version.cpython-312.pyc
+                            |-- test_weakref.cpython-312.pyc
+                        |-- _test_extension.c
+                        |-- _test_extension.cpython-312-x86_64-linux-gnu.so
+                        |-- _test_extension_cpp.cpp
+                        |-- _test_extension_cpp.cpython-312-x86_64-linux-gnu.so
+                        |-- fail_c_stack_refs_suspended_gc.py
+                        |-- fail_clearing_run_switches.py
+                        |-- fail_cpp_exception.py
+                        |-- fail_initialstub_already_started.py
+                        |-- fail_issue_515_freethread_gc.py
+                        |-- fail_slp_switch.py
+                        |-- fail_switch_critical_section.py
+                        |-- fail_switch_three_greenlets.py
+                        |-- fail_switch_three_greenlets2.py
+                        |-- fail_switch_two_greenlets.py
+                        |-- leakcheck.py
+                        |-- test_contextvars.py
+                        |-- test_cpp.py
+                        |-- test_extension_interface.py
+                        |-- test_gc.py
+                        |-- test_generator.py
+                        |-- test_generator_nested.py
+                        |-- test_greenlet.py
+                        |-- test_greenlet_trash.py
+                        |-- test_interpreter_shutdown.py
+                        |-- test_leaks.py
+                        |-- test_stack_saved.py
+                        |-- test_throw.py
+                        |-- test_tracing.py
+                        |-- test_version.py
+                        |-- test_weakref.py
+                |-- greenlet-3.5.6.dist-info
+                    |-- INSTALLER
+                    |-- METADATA
+                    |-- RECORD
+                    |-- WHEEL
+                    |-- licenses
+                        |-- LICENSE
+                        |-- LICENSE.PSF
+                    |-- top_level.txt
                 |-- h11
                     |-- __init__.py
                     |-- __pycache__
@@ -9661,6 +10338,303 @@
                                         |-- LICENSE
                                     |-- urllib3
                                         |-- LICENSE.txt
+                |-- playwright
+                    |-- __init__.py
+                    |-- __main__.py
+                    |-- __pycache__
+                        |-- __init__.cpython-312.pyc
+                        |-- __main__.cpython-312.pyc
+                        |-- _repo_version.cpython-312.pyc
+                    |-- _impl
+                        |-- __init__.py
+                        |-- __pycache__
+                            |-- __init__.cpython-312.pyc
+                            |-- _api_structures.cpython-312.pyc
+                            |-- _artifact.cpython-312.pyc
+                            |-- _assertions.cpython-312.pyc
+                            |-- _async_base.cpython-312.pyc
+                            |-- _browser.cpython-312.pyc
+                            |-- _browser_context.cpython-312.pyc
+                            |-- _browser_type.cpython-312.pyc
+                            |-- _cdp_session.cpython-312.pyc
+                            |-- _clock.cpython-312.pyc
+                            |-- _connection.cpython-312.pyc
+                            |-- _console_message.cpython-312.pyc
+                            |-- _credentials.cpython-312.pyc
+                            |-- _debugger.cpython-312.pyc
+                            |-- _dialog.cpython-312.pyc
+                            |-- _disposable.cpython-312.pyc
+                            |-- _download.cpython-312.pyc
+                            |-- _driver.cpython-312.pyc
+                            |-- _element_handle.cpython-312.pyc
+                            |-- _errors.cpython-312.pyc
+                            |-- _event_context_manager.cpython-312.pyc
+                            |-- _fetch.cpython-312.pyc
+                            |-- _file_chooser.cpython-312.pyc
+                            |-- _form_data.cpython-312.pyc
+                            |-- _frame.cpython-312.pyc
+                            |-- _glob.cpython-312.pyc
+                            |-- _greenlets.cpython-312.pyc
+                            |-- _har_router.cpython-312.pyc
+                            |-- _helper.cpython-312.pyc
+                            |-- _impl_to_api_mapping.cpython-312.pyc
+                            |-- _input.cpython-312.pyc
+                            |-- _js_handle.cpython-312.pyc
+                            |-- _json_pipe.cpython-312.pyc
+                            |-- _local_utils.cpython-312.pyc
+                            |-- _locator.cpython-312.pyc
+                            |-- _map.cpython-312.pyc
+                            |-- _network.cpython-312.pyc
+                            |-- _object_factory.cpython-312.pyc
+                            |-- _page.cpython-312.pyc
+                            |-- _path_utils.cpython-312.pyc
+                            |-- _playwright.cpython-312.pyc
+                            |-- _screencast.cpython-312.pyc
+                            |-- _selectors.cpython-312.pyc
+                            |-- _set_input_files_helpers.cpython-312.pyc
+                            |-- _str_utils.cpython-312.pyc
+                            |-- _stream.cpython-312.pyc
+                            |-- _sync_base.cpython-312.pyc
+                            |-- _tracing.cpython-312.pyc
+                            |-- _transport.cpython-312.pyc
+                            |-- _video.cpython-312.pyc
+                            |-- _waiter.cpython-312.pyc
+                            |-- _web_error.cpython-312.pyc
+                            |-- _web_storage.cpython-312.pyc
+                            |-- _writable_stream.cpython-312.pyc
+                        |-- __pyinstaller
+                            |-- __init__.py
+                            |-- __pycache__
+                                |-- __init__.cpython-312.pyc
+                                |-- hook-playwright.async_api.cpython-312.pyc
+                                |-- hook-playwright.sync_api.cpython-312.pyc
+                            |-- hook-playwright.async_api.py
+                            |-- hook-playwright.sync_api.py
+                        |-- _api_structures.py
+                        |-- _artifact.py
+                        |-- _assertions.py
+                        |-- _async_base.py
+                        |-- _browser.py
+                        |-- _browser_context.py
+                        |-- _browser_type.py
+                        |-- _cdp_session.py
+                        |-- _clock.py
+                        |-- _connection.py
+                        |-- _console_message.py
+                        |-- _credentials.py
+                        |-- _debugger.py
+                        |-- _dialog.py
+                        |-- _disposable.py
+                        |-- _download.py
+                        |-- _driver.py
+                        |-- _element_handle.py
+                        |-- _errors.py
+                        |-- _event_context_manager.py
+                        |-- _fetch.py
+                        |-- _file_chooser.py
+                        |-- _form_data.py
+                        |-- _frame.py
+                        |-- _glob.py
+                        |-- _greenlets.py
+                        |-- _har_router.py
+                        |-- _helper.py
+                        |-- _impl_to_api_mapping.py
+                        |-- _input.py
+                        |-- _js_handle.py
+                        |-- _json_pipe.py
+                        |-- _local_utils.py
+                        |-- _locator.py
+                        |-- _map.py
+                        |-- _network.py
+                        |-- _object_factory.py
+                        |-- _page.py
+                        |-- _path_utils.py
+                        |-- _playwright.py
+                        |-- _screencast.py
+                        |-- _selectors.py
+                        |-- _set_input_files_helpers.py
+                        |-- _str_utils.py
+                        |-- _stream.py
+                        |-- _sync_base.py
+                        |-- _tracing.py
+                        |-- _transport.py
+                        |-- _video.py
+                        |-- _waiter.py
+                        |-- _web_error.py
+                        |-- _web_storage.py
+                        |-- _writable_stream.py
+                    |-- _repo_version.py
+                    |-- async_api
+                        |-- __init__.py
+                        |-- __pycache__
+                            |-- __init__.cpython-312.pyc
+                            |-- _context_manager.cpython-312.pyc
+                            |-- _generated.cpython-312.pyc
+                        |-- _context_manager.py
+                        |-- _generated.py
+                    |-- driver
+                        |-- LICENSE
+                        |-- README.md
+                        |-- node
+                        |-- package
+                            |-- LICENSE
+                            |-- NOTICE
+                            |-- README.md
+                            |-- ThirdPartyNotices.txt
+                            |-- bin
+                                |-- install_media_pack.ps1
+                                |-- install_webkit_wsl.ps1
+                                |-- reinstall_chrome_beta_linux.sh
+                                |-- reinstall_chrome_beta_mac.sh
+                                |-- reinstall_chrome_beta_win.ps1
+                                |-- reinstall_chrome_stable_linux.sh
+                                |-- reinstall_chrome_stable_mac.sh
+                                |-- reinstall_chrome_stable_win.ps1
+                                |-- reinstall_msedge_beta_linux.sh
+                                |-- reinstall_msedge_beta_mac.sh
+                                |-- reinstall_msedge_beta_win.ps1
+                                |-- reinstall_msedge_dev_linux.sh
+                                |-- reinstall_msedge_dev_mac.sh
+                                |-- reinstall_msedge_dev_win.ps1
+                                |-- reinstall_msedge_stable_linux.sh
+                                |-- reinstall_msedge_stable_mac.sh
+                                |-- reinstall_msedge_stable_win.ps1
+                            |-- browsers.json
+                            |-- cli.js
+                            |-- index.d.ts
+                            |-- index.js
+                            |-- index.mjs
+                            |-- lib
+                                |-- bootstrap.js
+                                |-- coreBundle.js
+                                |-- entry
+                                    |-- cliDaemon.js
+                                    |-- dashboardApp.js
+                                    |-- mcp.js
+                                    |-- oopBrowserDownload.js
+                                |-- package.js
+                                |-- server
+                                    |-- chromium
+                                        |-- appIcon.png
+                                    |-- electron
+                                        |-- loader.js
+                                |-- serverRegistry.js
+                                |-- serverRegistry.js.LICENSE
+                                |-- tools
+                                    |-- cli-client
+                                        |-- channelSessions.js
+                                        |-- cli.js
+                                        |-- help.json
+                                        |-- minimist.js
+                                        |-- output.js
+                                        |-- program.js
+                                        |-- registry.js
+                                        |-- session.js
+                                    |-- dashboard
+                                        |-- appIcon.png
+                                    |-- skills
+                                        |-- playwright-cli
+                                            |-- SKILL.md
+                                            |-- references
+                                                |-- element-attributes.md
+                                                |-- playwright-tests.md
+                                                |-- request-mocking.md
+                                                |-- running-code.md
+                                                |-- session-management.md
+                                                |-- storage-state.md
+                                                |-- test-generation.md
+                                                |-- tracing.md
+                                                |-- video-recording.md
+                                        |-- playwright-component-testing
+                                            |-- SKILL.md
+                                            |-- references
+                                                |-- gallery-spec.md
+                                                |-- migration.md
+                                                |-- react.md
+                                                |-- typing.md
+                                                |-- vue.md
+                                        |-- playwright-trace
+                                            |-- SKILL.md
+                                    |-- utils
+                                        |-- extension.js
+                                        |-- socketConnection.js
+                                |-- utilsBundle.js
+                                |-- utilsBundle.js.LICENSE
+                                |-- vite
+                                    |-- dashboard
+                                        |-- assets
+                                            |-- codeMirrorModule--QdMvsKi.css
+                                            |-- codeMirrorModule-CQ8RZGBm.js
+                                            |-- codicon-DCmgc-ay.ttf
+                                            |-- firefox-1bWoP6pv.svg
+                                            |-- firefox-beta-k3eOH_eK.svg
+                                            |-- firefox-nightly-Cp5nfeDT.svg
+                                            |-- index-AwgwcYie.css
+                                            |-- index-hRvO4yU2.js
+                                            |-- safari-na3_-uQk.svg
+                                        |-- index.html
+                                        |-- playwright-logo.svg
+                                    |-- htmlReport
+                                        |-- index.html
+                                        |-- report.css
+                                        |-- report.js
+                                    |-- recorder
+                                        |-- assets
+                                            |-- codeMirrorModule--QdMvsKi.css
+                                            |-- codeMirrorModule-CVQWJZAA.js
+                                            |-- codicon-DCmgc-ay.ttf
+                                            |-- index-BZpYJZ-P.css
+                                            |-- index-hrlLqLtq.js
+                                        |-- index.html
+                                        |-- playwright-logo.svg
+                                    |-- traceViewer
+                                        |-- assets
+                                            |-- codeMirrorModule-BbkfBe3n.js
+                                            |-- defaultSettingsView-Ds6CBOo0.js
+                                            |-- urlMatch-L3liM589.js
+                                            |-- xtermModule-DywYcAf8.js
+                                        |-- codeMirrorModule.-QdMvsKi.css
+                                        |-- codicon.DCmgc-ay.ttf
+                                        |-- defaultSettingsView.Bqk9acqE.css
+                                        |-- index.B4cLoZK3.js
+                                        |-- index.B_TqY17P.css
+                                        |-- index.html
+                                        |-- manifest.webmanifest
+                                        |-- playwright-logo.svg
+                                        |-- snapshot.B_Jk1wbt.js
+                                        |-- snapshot.html
+                                        |-- sw.bundle.js
+                                        |-- uiMode.CU5KtEkS.js
+                                        |-- uiMode.CyMfwkXJ.css
+                                        |-- uiMode.html
+                                        |-- xtermModule.kHJ-D0s7.css
+                                |-- webp_codec.LICENSE
+                                |-- webp_codec.wasm
+                                |-- xdg-open
+                            |-- package.json
+                            |-- types
+                                |-- protocol.d.ts
+                                |-- structs.d.ts
+                                |-- types.d.ts
+                    |-- py.typed
+                    |-- sync_api
+                        |-- __init__.py
+                        |-- __pycache__
+                            |-- __init__.cpython-312.pyc
+                            |-- _context_manager.cpython-312.pyc
+                            |-- _generated.cpython-312.pyc
+                        |-- _context_manager.py
+                        |-- _generated.py
+                |-- playwright-1.63.0.dist-info
+                    |-- INSTALLER
+                    |-- METADATA
+                    |-- RECORD
+                    |-- REQUESTED
+                    |-- WHEEL
+                    |-- entry_points.txt
+                    |-- licenses
+                        |-- LICENSE
+                    |-- top_level.txt
                 |-- pyasn1
                     |-- __init__.py
                     |-- __pycache__
@@ -10298,6 +11272,33 @@
                     |-- WHEEL
                     |-- licenses
                         |-- LICENSE
+                |-- pyee
+                    |-- __init__.py
+                    |-- __pycache__
+                        |-- __init__.cpython-312.pyc
+                        |-- asyncio.cpython-312.pyc
+                        |-- base.cpython-312.pyc
+                        |-- cls.cpython-312.pyc
+                        |-- executor.cpython-312.pyc
+                        |-- trio.cpython-312.pyc
+                        |-- twisted.cpython-312.pyc
+                        |-- uplift.cpython-312.pyc
+                    |-- asyncio.py
+                    |-- base.py
+                    |-- cls.py
+                    |-- executor.py
+                    |-- py.typed
+                    |-- trio.py
+                    |-- twisted.py
+                    |-- uplift.py
+                |-- pyee-13.0.1.dist-info
+                    |-- INSTALLER
+                    |-- METADATA
+                    |-- RECORD
+                    |-- WHEEL
+                    |-- licenses
+                        |-- LICENSE
+                    |-- top_level.txt
                 |-- pyjwt-2.14.0.dist-info
                     |-- INSTALLER
                     |-- METADATA
@@ -11193,6 +12194,7 @@
                         |-- LICENSE
                     |-- top_level.txt
     |-- pyvenv.cfg
+|-- ARCHITECTURE.md
 |-- Dockerfile.executor
 |-- InputFiles
     |-- ANUP CDC ALL PAGES.pdf
@@ -11214,23 +12216,14 @@
         |-- agent.cpython-312.pyc
     |-- agent.py
 |-- discovery_report_INDOS (20)_20260912_121021.md
-|-- discovery_report_INDOS (20)_20260917_163950.md
-|-- discovery_report_INDOS (20)_20260918_160702.md
-|-- discovery_report_INDOS (20)_20260918_161646.md
-|-- discovery_report_INDOS (20)_20260921_100203.md
-|-- discovery_report_INDOS (20)_20260921_145007.md
-|-- discovery_report_INDOS (20)_20260921_145220.md
-|-- discovery_report_INDOS (20)_20260921_145955.md
-|-- discovery_report_INDOS (20)_20260921_150828.md
-|-- discovery_report_INDOS (20)_20260921_151025.md
-|-- discovery_report_INDOS (20)_20260921_151118.md
-|-- discovery_report_INDOS (20)_20260921_151422.md
-|-- discovery_report_INDOS (20)_20260921_152533.md
-|-- discovery_report_INDOS (20)_20260921_154212.md
-|-- discovery_report_INDOS (20)_20260921_170959.md
-|-- discovery_report_INDOS (20)_20260921_171130.md
-|-- discovery_report_SID Anup-1_20260921_154943.md
-|-- discovery_report_SID Anup-1_20260921_162129.md
+|-- discovery_report_INDOS (20)_20260923_130222.md
+|-- discovery_report_INDOS (20)_20260923_154614.md
+|-- discovery_report_INDOS (20)_20260923_162157.md
+|-- discovery_report_INDOS (20)_20260923_171534.md
+|-- discovery_report_INDOS (20)_20260923_172929.md
+|-- discovery_report_INDOS (20)_20260923_174334.md
+|-- discovery_report_INDOS (20)_20260923_180403.md
+|-- discovery_report_INDOS (20)_20260923_180947.md
 |-- discovery_report_SID Anup-1_20260921_165106.md
 |-- engine
     |-- __init__.py
@@ -11241,8 +12234,6 @@
         |-- upgrade_method.cpython-312.pyc
         |-- validation_engine.cpython-312.pyc
     |-- models.py
-    |-- onboard_seed.py
-    |-- upgrade_method.py
     |-- validation_engine.py
 |-- execution
     |-- __init__.py
@@ -11256,6 +12247,7 @@
     |-- __init__.py
     |-- __pycache__
         |-- __init__.cpython-312.pyc
+        |-- browser_executor.cpython-312.pyc
         |-- http_executor.cpython-312.pyc
     |-- browser_executor.py
     |-- form_executor.py
@@ -11267,7 +12259,6 @@
         |-- __init__.cpython-312.pyc
         |-- generator.cpython-312.pyc
     |-- generator.py
-|-- implementation_plan.md
 |-- init_db.py
 |-- main.py
 |-- mcp_server
@@ -11275,7 +12266,6 @@
         |-- server.cpython-312.pyc
     |-- server.py
 |-- method_registry.db
-|-- next_session_instructions.md
 |-- ocr
     |-- __pycache__
         |-- client.cpython-312.pyc
@@ -11287,6 +12277,7 @@
     |-- discovery.txt
     |-- discovery_analysis.txt
     |-- discovery_final.txt
+    |-- discovery_page_check.txt
     |-- discovery_queries.txt
     |-- local_extraction.txt
     |-- method_generation.txt
@@ -11302,17 +12293,15 @@
     |-- document_types.py
     |-- models.py
     |-- repository.py
-    |-- seed_store.py
 |-- report.py
 |-- requirements.txt
 |-- scratch_diff.py
 |-- scratch_diff_A_idle.html
 |-- scratch_diff_B_fake_with_dob.html
 |-- scratch_diff_C_fake_no_dob.html
-|-- seed_credentials.enc
-|-- seed_credentials.enc.key
 |-- sources_data.tsv
-|-- system_architecture.md
+|-- test_real_vision.py
+|-- test_vision.py
 |-- tests
     |-- __init__.py
     |-- __pycache__
@@ -11342,16 +12331,16 @@
     |-- test_lookup.py
     |-- test_mcp.py
     |-- test_registry.py
-    |-- test_seed_store.py
-    |-- test_upgrade_method.py
     |-- test_validator.py
     |-- test_xhr_extractor.py
 |-- utils
     |-- __init__.py
     |-- __pycache__
         |-- __init__.cpython-312.pyc
+        |-- js_intel.cpython-312.pyc
         |-- llm_client.cpython-312.pyc
         |-- local_llm_client.cpython-312.pyc
+    |-- js_intel.py
     |-- llm_client.py
     |-- local_llm_client.py
 |-- validation

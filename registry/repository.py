@@ -147,3 +147,13 @@ class MethodRegistry:
         cursor.execute('UPDATE methods SET status = ? WHERE method_id = ?', (status.value, method_id))
         conn.commit()
         conn.close()
+
+    def delete_method(self, method_id: str) -> bool:
+        """Delete a method from the registry. Returns True if a row was deleted."""
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        cursor.execute('DELETE FROM methods WHERE method_id = ?', (method_id,))
+        deleted = cursor.rowcount > 0
+        conn.commit()
+        conn.close()
+        return deleted

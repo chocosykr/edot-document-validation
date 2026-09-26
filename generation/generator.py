@@ -12,6 +12,8 @@ from bs4 import BeautifulSoup
 from registry.models import ValidationMethod, MethodType, MethodStatus, CURRENT_METHOD_SCHEMA
 from registry.document_types import document_type_key, profile_document_type_key
 from utils.llm_client import generate_json
+from utils.js_intel import harvest_js_intel, harvest_js_intel_with_text
+from generation.bundle_contract import _extract_xhr_contract_from_bundles
 
 logger = logging.getLogger(__name__)
 
@@ -24,21 +26,49 @@ FAKE_PROBE_INPUTS = {
 }
 
 
-def _collect_inline_js(soup) -> tuple[str, int]:
+def _sanitize_not_found_signatures(raw) -> List[dict]:
+    """Validate declared not-found signatures; drop anything broad.
+
+    Only entries carrying BOTH an integer `status` and a non-empty `contains`
+    message survive. This structurally prevents a vague status-only rule (which
+    could misread a CAPTCHA rejection, a rate limit, or a server error as a
+    document verdict) from ever reaching the executor.
     """
-    Collect inline <script> text from the page. External bundles are counted
-    but never downloaded (out of scope — see implementation plan, Component 1
-    non-goals). Returns (inline_js_text, external_custom_js_count).
+    if not isinstance(raw, list):
+        return []
+    clean: List[dict] = []
+    for entry in raw:
+        if not isinstance(entry, dict):
+            continue
+        try:
+            status = int(entry.get("status"))
+        except (TypeError, ValueError):
+            continue
+        contains = entry.get("contains")
+        if not isinstance(contains, str) or not contains.strip():
+            continue
+        clean.append({"status": status, "contains": contains.strip()})
+    return clean
+
+
+def _collect_inline_js(soup) -> tuple[str, List[str]]:
+    """
+    Collect inline <script> text AND the src of every external, non-library
+    script. Returns (inline_js_text, external_custom_js_srcs).
+
+    External bundles used to be counted and then ignored; they are now returned
+    so ``_fetch_page_structure`` can harvest API endpoints from them. For SPAs
+    the real request contract lives in the bundle, not in the visible page.
     """
     inline_js = []
-    external_custom_js = 0
+    external_custom_js = []
 
     for script in soup.find_all("script"):
         src = script.get("src", "")
         if src:
             src_lower = src.lower()
             if not any(lib in src_lower for lib in ["jquery", "bootstrap", "react", "vue", "angular", "cdn"]):
-                external_custom_js += 1
+                external_custom_js.append(src)
         else:
             text = script.string or ""
             if text.strip():
@@ -68,6 +98,7 @@ def _fetch_page_structure(url: str) -> dict:
 
     summary = []
     workflow_options = []
+    bundle_js = ""  # raw external-bundle text, for Component 1b (may stay empty)
 
     # Extract form structure
     forms = soup.find_all("form")
@@ -111,7 +142,7 @@ def _fetch_page_structure(url: str) -> dict:
     # Extract JavaScript to find AJAX endpoints and form submission logic
     full_js_text, external_custom_js = _collect_inline_js(soup)
 
-    if full_js_text or external_custom_js > 0:
+    if full_js_text or external_custom_js:
         summary.append("\n--- JavaScript Logic (AJAX/form submission) ---")
 
         lines = full_js_text.split("\n")
@@ -123,22 +154,60 @@ def _fetch_page_structure(url: str) -> dict:
         is_minified = avg_line_length > 200
         is_too_long = total_chars > 40000  # Leaves plenty of room for 15k token budget
 
+        # External bundles: this is where an SPA keeps its real request
+        # contract. Harvest ranked endpoint hints so the LLM can derive the
+        # verb/url/param names from the actual API rather than the visible form.
+        # The bundle TEXT is also returned so the deterministic bundle
+        # extractor (Component 1b) can run over it without a second download.
+        endpoint_hints: List[str] = []
+        call_hints: List[str] = []
+        if external_custom_js:
+            try:
+                endpoint_hints, call_hints, bundle_js = harvest_js_intel_with_text(url, external_custom_js)
+            except Exception as e:
+                logger.warning("External JS endpoint harvest failed for %s: %s", url, e)
+
         # Legacy sites often have 2-4 custom utility scripts (e.g., date-picker.js).
         # SPAs typically have massive bundles. We'll rely on size/minification primarily.
         if is_minified or is_too_long:
-            summary.append("[BROWSER_FALLBACK_REQUIRED: Modern SPA or heavily minified logic detected.]")
-            summary.append("Do NOT attempt to guess the API endpoint. Generate a BROWSER method type.")
+            if endpoint_hints:
+                summary.append(
+                    "[Modern SPA/minified bundle detected — the real API endpoints "
+                    "were harvested from it and are listed below.]"
+                )
+            else:
+                summary.append("[BROWSER_FALLBACK_REQUIRED: Modern SPA or heavily minified logic detected.]")
+                summary.append("Do NOT attempt to guess the API endpoint. Generate a BROWSER method type.")
         else:
             summary.append(full_js_text)
             summary.append("\nIMPORTANT: If the JavaScript shows AJAX/XMLHttpRequest calls to a URL like a servlet or API endpoint, "
                           "the page does NOT use standard HTML form submission. "
                           "Generate an HTTP method type targeting that AJAX endpoint instead of WEB_FORM.")
 
+        if endpoint_hints:
+            summary.append("\n--- API endpoints found in external JavaScript bundles ---")
+            summary.append("These come from the page's own JavaScript/network calls. Derive the request "
+                           "contract (verb, url, parameter names) from THESE, not from visible form field names:")
+            for path in endpoint_hints:
+                summary.append(f"  {path}")
+
+        if call_hints:
+            summary.append("\n--- API call patterns found in JavaScript (verb + path + params) ---")
+            summary.append("These lines show the HTTP verb, path, and query parameter names the site's own "
+                           "code actually sends. COPY the verb and the parameter names EXACTLY — do not "
+                           "substitute a parameter name from the visible form:")
+            for line in call_hints:
+                summary.append(f"  {line}")
+            summary.append("If one of these calls is a CAPTCHA-fetch endpoint and another the verify/lookup "
+                           "call it feeds, emit the FETCH_CAPTCHA -> SOLVE_CAPTCHA -> REQUEST sequence, using "
+                           "the exact verb and parameter names shown above.")
+
         summary.append("--- End JavaScript ---")
 
     return {
         "summary": "\n".join(summary),
         "inline_js": full_js_text,
+        "bundle_js": bundle_js,
         "workflow_options": workflow_options,
     }
 
@@ -507,6 +576,7 @@ _NARROW_MAPPING_PROMPT = _load_narrow_mapping_prompt()
 def _build_narrow_mapping_payload(
     redacted_profile: dict,
     xhr_contract: dict,
+    available_inputs: List[str] = None,
 ) -> tuple[str, dict]:
     """
     Build the narrow mapping prompt payload. Returns (user_prompt, extras)
@@ -515,22 +585,15 @@ def _build_narrow_mapping_payload(
     """
     _NARROW_MAPPING_PROMPT = _load_narrow_mapping_prompt()
 
-    profile_fields: List[str] = []
-
-    def _flatten(obj, prefix=""):
-        for k, v in obj.items():
-            name = f"{prefix}.{k}" if prefix else k
-            if isinstance(v, dict):
-                _flatten(v, name)
-            elif isinstance(v, list):
-                # List field names matter (e.g. document_numbers); values may
-                # be redaction tokens and are not shown.
-                profile_fields.append(name)
-            elif isinstance(v, (str, int, float)) and v not in (None, ""):
-                profile_fields.append(name)
-
-    _flatten(redacted_profile)
-    profile_fields = sorted(profile_fields)
+    # Provide only the exact fields that the engine can actually inject.
+    profile_fields = available_inputs if available_inputs is not None else [
+        "document_number",
+        "date_of_birth",
+        "full_name",
+        "document_type_key",
+        "issuing_country",
+        "verification_url"
+    ]
 
     user_prompt = (
         _NARROW_MAPPING_PROMPT
@@ -571,7 +634,12 @@ def _resolve_param_mapping(
         else:
             normalized_mapping[param] = placeholder
     param_mapping = normalized_mapping
-    required_inputs = [aliases.get(field, field) for field in required_inputs]
+
+    cleaned_required = []
+    for field in required_inputs:
+        f_clean = field[2:-2].strip() if isinstance(field, str) and field.startswith("{{") and field.endswith("}}") else field
+        cleaned_required.append(aliases.get(f_clean, f_clean))
+    required_inputs = cleaned_required
 
     if not param_mapping:
         well_known = {
@@ -624,6 +692,36 @@ def _infer_workflow_params(
     return workflow_params
 
 
+def _doc_type_workflow_evidence(
+    document_key: str,
+    workflow_options: list,
+    endpoint: str,
+) -> bool:
+    """
+    Compatibility evidence for doc-type-guarded narrow-path generation.
+    Accepted, in order of strength:
+      1. A page <select> option naming the document type (legacy
+         server-rendered pages), or
+      2. the extracted API path itself carrying the doc-type token (SPA:
+         options are rendered client-side and never appear in the HTML, but
+         a path segment like "/sid/verify" is the site's own statement of
+         what the endpoint verifies).
+    Generic and data-driven: the token comes from the canonical document-type
+    key (e.g. "IN_SID" -> "sid"), never from a hardcoded site name.
+    """
+    doc_token = document_key.split("_", 1)[1].lower() if "_" in document_key else ""
+    option_text = " ".join(
+        f"{item.get('value', '')} {item.get('text', '')}"
+        for item in (workflow_options or [])
+    ).lower()
+    endpoint_path = "".join((endpoint or "").lower().split("/"))
+    has_option_evidence = (
+        doc_token in option_text or "seafarer identity" in option_text
+    )
+    has_path_evidence = bool(doc_token) and doc_token in endpoint_path
+    return has_option_evidence or has_path_evidence
+
+
 def _build_method_from_contract(
     param_mapping: Dict[str, str],
     required_inputs: List[str],
@@ -637,19 +735,42 @@ def _build_method_from_contract(
     resolved param→field mapping. The LLM is never trusted with the
     endpoint, verb, or encoding — only the mapping.
     """
-    # Build execution steps — structure comes from the contract, not the LLM
+    # Build execution steps — structure comes from the contract, not the LLM.
+    # If the contract carries captcha session params, emit the
+    # FETCH_CAPTCHA -> SOLVE_CAPTCHA -> REQUEST sequence; the executor makes
+    # {{captcha_text}}/{{captcha_id}} available as template variables after
+    # SOLVE_CAPTCHA.
     params: Dict[str, str] = dict(xhr_contract.get("static_params", {}))
     for param_name, placeholder in param_mapping.items():
         if placeholder:
             params[param_name] = placeholder
 
-    steps = [{
+    steps: List[dict] = []
+    captcha_params = xhr_contract.get("captcha_params") or {}
+    if captcha_params:
+        captcha_endpoint = xhr_contract.get("captcha_endpoint")
+        if not captcha_endpoint:
+            logger.warning(
+                "Contract carries captcha params but no captcha endpoint; "
+                "captcha steps omitted — the method will fail validation."
+            )
+        else:
+            steps.append({
+                "action": "FETCH_CAPTCHA",
+                "url": captcha_endpoint,
+                "response_format": "json",
+            })
+            steps.append({"action": "SOLVE_CAPTCHA"})
+    for name, placeholder in captcha_params.items():
+        params[name] = placeholder
+
+    steps.append({
         "action": "REQUEST",
         "method": xhr_contract["verb"],
         "url": xhr_contract["endpoint"],
         "params": params,
         "param_location": xhr_contract["param_location"],
-    }]
+    })
 
     document_type = redacted_profile.get("document_type") or ""
     country = redacted_profile.get("issuing_country") or ""
@@ -713,8 +834,8 @@ def _probe_endpoint(
     (never a guessed URL). `params` are final wire-format params, already
     translated by _probe_wire_params. Returns the raw response body, or None.
 
-    Callers pass either fake structural values or the seed credential from
-    the raw extraction; probe inputs are never logged or persisted here.
+    Callers pass either fake structural values or operator-supplied real
+    inputs; probe inputs are never logged or persisted here.
     """
     from urllib.parse import urlencode
 
@@ -877,19 +998,16 @@ def _discover_discriminators(
     (difflib — no LLM in the diff step) and returns an expected_responses dict
     for the registry.
 
-    Real-input sourcing (seed credential policy):
-      - The real document number / DOB come from the STORED SEED CREDENTIAL
-        for this registry/document-type (encrypted at rest, decrypted by the
-        engine-supplied real_inputs_provider) — NEVER from the redacted
-        profile, whose values are tokens like [DOCUMENT_NUMBER], and never
-        from the document currently being validated. The seed is supplied
-        once per registry at onboarding by a consenting person; a seed valid
-        for one registry proves nothing about any other registry.
+    Real-input sourcing (PII policy):
+      - The real document number / DOB come from the caller-supplied
+        real_inputs_provider (raw, locally-held values) — NEVER from the
+        redacted profile, whose values are tokens like [DOCUMENT_NUMBER],
+        and never from the document currently being validated. A real value
+        valid for one registry proves nothing about any other registry.
       - Values exist in memory only: never logged, never persisted,
         discarded immediately after the probe.
       - The two-sided fake-vs-real diff confirms BOTH markers; without a
-        seed the method is REJECTED-only (empty success_keywords) until a
-        seed is onboarded and a manual re-probe (engine.upgrade_method) runs.
+        provider the method is REJECTED-only (empty success_keywords).
     """
     static_params = xhr_contract.get("static_params", {})
 
@@ -903,7 +1021,7 @@ def _discover_discriminators(
     if not fake_response:
         return {"success_keywords": [], "failure_keywords": []}
 
-    # Seed credential: from the raw extraction via the engine's provider.
+    # Real inputs: from the caller-supplied provider (raw extraction).
     real_inputs = None
     if real_inputs_provider is not None:
         try:
@@ -923,7 +1041,7 @@ def _discover_discriminators(
             param_location=xhr_contract["param_location"],
             params=real_params,
         )
-        # Discard the seed credential immediately after the probe (PII).
+        # Discard the real inputs immediately after the probe (PII).
         del real_inputs
 
         if real_response:
@@ -932,7 +1050,7 @@ def _discover_discriminators(
             success_marker = (diff.get("success_marker") or "").strip()
         real_response = None  # drop response bodies from memory
     else:
-        # REJECTED-only path: no seed credential. Diff the fake response
+        # REJECTED-only path: no real-input provider. Diff the fake response
         # against the idle page so static page labels are excluded; without
         # the idle page, fall back to a pattern scan of the fake response
         # alone (weakest evidence — the structural test is the backstop).
@@ -971,7 +1089,7 @@ def _discover_discriminators(
 def generate_candidate_method(
     redacted_profile: dict,
     source_info: dict,
-    seed_provider: Optional[Callable[[], Optional[Dict[str, str]]]] = None,
+    available_inputs: List[str] = None,
 ) -> ValidationMethod:
     """
     Generates a candidate validation method.
@@ -983,13 +1101,9 @@ def generate_candidate_method(
     When extraction fails (partial/ambiguous/minified), the existing
     full-LLM path runs unchanged — graceful degradation, not a hard break.
 
-    seed_provider: optional callable returning the STORED SEED CREDENTIAL
-    (document_number, date_of_birth) for this registry/document-type, from
-    the encrypted seed store. This is the ONLY real-value source for the
-    discriminator probe — the redacted profile carries tokens, and the
-    document being validated is never used as a probe input. Without a seed
-    the method is saved REJECTED-only; engine.upgrade_method upgrades it
-    after onboarding. Values stay in memory and are never persisted.
+    The redacted profile carries tokens, so any real-value probe input must
+    come from an operator-supplied provider; values stay in memory and are
+    never persisted.
     """
     source_url = source_info.get("source_url") or source_info.get("url")
 
@@ -1018,6 +1132,25 @@ def generate_candidate_method(
             logger.warning("XHR extraction raised unexpectedly — falling back to LLM: %s", e)
             xhr_contract = None
 
+    # Component 1b: when the page is an SPA shell (no usable inline JS), try
+    # the deterministic fetch()-contract extractor over the external bundles
+    # already downloaded for the endpoint hints. Same strictness rule: a
+    # wrong extraction is worse than no extraction.
+    if not xhr_contract and page_structure and page_structure.get("bundle_js"):
+        try:
+            xhr_contract = _extract_xhr_contract_from_bundles(
+                page_structure["bundle_js"],
+                source_url,
+            )
+            if xhr_contract:
+                logger.info(
+                    "Bundle-based XHR contract accepted (SPA shell page): %s",
+                    xhr_contract["endpoint"],
+                )
+        except Exception as e:
+            logger.warning("Bundle XHR extraction raised unexpectedly — falling back to LLM: %s", e)
+            xhr_contract = None
+
     logger.info("XHR extractor result: source_url=%s xhr_contract=%r", source_url, xhr_contract)
 
     if xhr_contract:
@@ -1026,16 +1159,14 @@ def generate_candidate_method(
         # ------------------------------------------------------------
         xhr_contract["workflow_options"] = page_structure.get("workflow_options", []) if page_structure else []
         document_key = profile_document_type_key(redacted_profile)
-        if document_key == "IN_SID":
-            option_text = " ".join(
-                f"{item.get('value', '')} {item.get('text', '')}"
-                for item in xhr_contract["workflow_options"]
-            ).lower()
-            if "sid" not in option_text and "seafarer identity" not in option_text:
-                raise RuntimeError(
-                    "Source page has no workflow option compatible with document type IN_SID."
-                )
-        user_prompt, _ = _build_narrow_mapping_payload(redacted_profile, xhr_contract)
+        if document_key == "IN_SID" and not _doc_type_workflow_evidence(
+            document_key, xhr_contract["workflow_options"], xhr_contract.get("endpoint") or ""
+        ):
+            raise RuntimeError(
+                "Source page has no workflow option or API-path evidence "
+                "compatible with document type IN_SID."
+            )
+        user_prompt, _ = _build_narrow_mapping_payload(redacted_profile, xhr_contract, available_inputs=available_inputs)
 
         llm_mapping = generate_json(
             "You map document fields to API parameters. Return ONLY JSON.",
@@ -1124,11 +1255,21 @@ def generate_candidate_method(
     llm_output["status"] = MethodStatus.TESTING
     # Positive verification is always decided by response-field comparison;
     # generated keyword markers are not trusted for either path.
-    llm_output["expected_responses"] = {
+    expected_responses = {
         "comparison_mode": "field_match",
         "method_schema": CURRENT_METHOD_SCHEMA,
         "document_type_key": profile_document_type_key(redacted_profile),
     }
+    # A confirmed, narrow not-found signature MAY be preserved. It carries no
+    # success semantics — it only turns one specific "document not found"
+    # response into REJECTED instead of TECHNICAL_FAILURE. Entries without both
+    # a status and an exact message are dropped by the sanitizer.
+    signatures = _sanitize_not_found_signatures(
+        (llm_output.get("expected_responses") or {}).get("not_found_signatures")
+    )
+    if signatures:
+        expected_responses["not_found_signatures"] = signatures
+    llm_output["expected_responses"] = expected_responses
 
     # Parse and validate through Pydantic
     return ValidationMethod(**llm_output)

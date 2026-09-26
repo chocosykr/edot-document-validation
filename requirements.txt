@@ -3,5 +3,11 @@ python-dotenv
 # google-genai
 tavily-python
 pydantic
-cryptography
 rapidfuzz
+mcp==2.2.0
+beautifulsoup4==4.15.0
+# Agentic fallback loop (agent_fallback.py)
+langchain-core
+langchain-openai
+langchain-mcp-adapters
+langgraph

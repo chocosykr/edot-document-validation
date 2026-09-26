@@ -1,2 +1,5 @@
-FROM python:3.12-alpine
-RUN pip install --no-cache-dir beautifulsoup4
+FROM mcr.microsoft.com/playwright/python:v1.40.0-jammy
+# The base image provides browsers (/ms-playwright) + OS deps only; the
+# playwright pip package must be installed here. Version MUST match the
+# bundled browser revision (chromium-1091 == playwright 1.40.x).
+RUN pip install --no-cache-dir beautifulsoup4 requests python-dotenv playwright==1.40.0

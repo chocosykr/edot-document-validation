@@ -17,6 +17,32 @@ LLM_MODEL = os.getenv("LLM_MODEL", "AI_Local")
 LLM_API_KEY = os.getenv("LLM_API_KEY", "")
 
 
+def get_llm_config() -> Dict[str, Any]:
+    """Single source of truth for the local/frontier model-selection toggle.
+
+    EVERY LLM call site in the codebase must resolve its request config here
+    instead of reading the env itself, so the `.env` toggle drives them all
+    identically:
+
+      - The ENDPOINT never changes: it is always ``LLM_URL``.
+      - ``LLM_MODEL`` is the switch: ``"AI_Local"`` selects local mode, a
+        frontier model name (e.g. ``"gemini/gemini-2.5-flash"``) selects
+        frontier mode. Same endpoint, different model in the payload.
+      - There are no external providers and no fallback chain: this client
+        only ever calls ``LLM_URL``. ``USE_LOCAL_LLM_ONLY`` is surfaced for
+        callers/reporting but nothing escalates to a different model.
+
+    Values are read at CALL time, not import time, so a process that changes
+    the env before calling (or a test that sets the toggle) is honoured.
+    """
+    return {
+        "url": os.getenv("LLM_URL") or LLM_URL,
+        "model": os.getenv("LLM_MODEL") or LLM_MODEL or "AI_Local",
+        "api_key": os.getenv("LLM_API_KEY") or LLM_API_KEY,
+        "use_local_only": os.getenv("USE_LOCAL_LLM_ONLY", "false").lower() == "true",
+    }
+
+
 def _extract_json(text: str) -> Optional[Dict[str, Any]]:
     """
     Extract the first valid JSON object from text that may contain
@@ -75,112 +101,117 @@ def _extract_json(text: str) -> Optional[Dict[str, Any]]:
 
 def generate_json(system_prompt: str, user_prompt: str) -> Optional[Dict[str, Any]]:
     """
-    Calls LLMs to generate a JSON response.
-    Tries Google AI Studio (native), then Groq, then the local fallback.
-    Parses the response and returns a dictionary, or None on failure.
+    Call the configured OpenAI-compatible model endpoint and parse JSON.
+
+    LOCAL-ONLY BY CONSTRUCTION: there is exactly one provider — ``LLM_URL``
+    with the model selected by the ``LLM_MODEL`` toggle. The former Google AI
+    Studio (native, hardcoded ``gemini-3.8-flash``) then Groq fallback chain
+    was REMOVED, because it was a silent escalation to a frontier model on a
+    local failure. If this call fails, the function returns None and the
+    caller's existing failure handling applies — it never calls a different,
+    costlier model.
     """
-    GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY", "")
-    GROQ_API_KEY = os.getenv("GROQ_API_KEY", "")
-    USE_LOCAL_LLM_ONLY = os.getenv("USE_LOCAL_LLM_ONLY", "false").lower() == "true"
+    config = get_llm_config()
+    url = config["url"]
+    model = config["model"]
+    api_key = config["api_key"]
 
-    if USE_LOCAL_LLM_ONLY:
-        logger.info("USE_LOCAL_LLM_ONLY is set to true. Bypassing external APIs.")
-        GOOGLE_API_KEY = ""
-        GROQ_API_KEY = ""
+    logger.info("LLM call: model=%r endpoint=%r", model, url)
 
-    # Try Google Gemini (Native API)
-    if GOOGLE_API_KEY:
-        logger.info("Trying LLM provider: Google AI Studio (gemini-3.8-flash)")
-        url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-3.8-flash:generateContent?key={GOOGLE_API_KEY}"
-        headers = {"Content-Type": "application/json"}
-        payload = {
-            "contents": [
-                {
-                    "role": "user",
-                    "parts": [{"text": system_prompt + "\n\n" + user_prompt}]
-                }
+    if not url or not api_key:
+        logger.error("LLM endpoint or API key is not configured; no call made.")
+        return None
+
+    headers = {
+        "Content-Type": "application/json",
+        "Authorization": f"Bearer {api_key}",
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
+    }
+
+    payload = {
+        "model": model,
+        "messages": [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_prompt}
+        ],
+        "temperature": 0.1,
+    }
+
+    req = urllib.request.Request(
+        url,
+        data=json.dumps(payload).encode("utf-8"),
+        headers=headers,
+        method="POST"
+    )
+
+    try:
+        with urllib.request.urlopen(req, timeout=60) as response:
+            response_data = json.loads(response.read().decode("utf-8"))
+        content = response_data["choices"][0]["message"]["content"].strip()
+    except urllib.error.HTTPError as e:
+        logger.warning(f"LLM HTTP Error: {e.code} {e.reason}\n{e.read().decode('utf-8')}")
+        return None
+    except urllib.error.URLError as e:
+        logger.warning(f"LLM URL Error: {e.reason}")
+        return None
+    except Exception as e:
+        logger.warning(f"LLM unexpected error: {e}")
+        return None
+
+    result = _extract_json(content)
+    if result is None:
+        logger.error(f"Could not extract JSON from LLM response: {content[:200]}")
+    return result
+
+
+def vision_call(prompt: str, img_b64: str, timeout_s: int = 30) -> str:
+    """Send an in-memory base64 image plus a prompt to the vision LLM.
+
+    This is the ONE vision implementation in the codebase. It uses the same
+    single endpoint (``LLM_URL``) and the same local/frontier toggle
+    (``LLM_MODEL``) as every other call site — no hardcoded model name and no
+    second endpoint. Used by the BROWSER executor's CAPTCHA solver and the
+    HTTP executor's ``SOLVE_CAPTCHA`` step.
+
+    Returns the model's text reply, or "" on any failure (the callers treat an
+    empty reply as "could not solve", never as a document verdict).
+    """
+    config = get_llm_config()
+    if not config["url"] or not config["api_key"]:
+        logger.warning("vision_call skipped: LLM_URL/LLM_API_KEY not set")
+        return ""
+
+    logger.info("vision_call: model=%r endpoint=%r", config["model"], config["url"])
+
+    payload = {
+        "model": config["model"],
+        "messages": [{
+            "role": "user",
+            "content": [
+                {"type": "text", "text": prompt},
+                {"type": "image_url",
+                 "image_url": {"url": f"data:image/png;base64,{img_b64}"}},
             ],
-            "generationConfig": {"temperature": 0.1}
-        }
-        
-        try:
-            req = urllib.request.Request(url, data=json.dumps(payload).encode("utf-8"), headers=headers, method="POST")
-            with urllib.request.urlopen(req, timeout=60) as response:
-                response_data = json.loads(response.read().decode("utf-8"))
-                content = response_data["candidates"][0]["content"]["parts"][0]["text"].strip()
-                result = _extract_json(content)
-                if result is not None:
-                    return result
-                logger.error(f"Could not extract JSON from Google response: {content[:200]}")
-        except urllib.error.HTTPError as e:
-            logger.warning(f"Google HTTP Error: {e.code} {e.reason}\n{e.read().decode('utf-8')}")
-        except Exception as e:
-            logger.warning(f"Google Unexpected error: {e}")
-            
-        logger.info("Falling back to next provider after Google failure...")
+        }],
+        "temperature": 0,
+        "max_tokens": 50,
+    }
 
-    # Set up OpenAI-compatible providers
-    providers = []
-    if GROQ_API_KEY:
-        providers.append({
-            "name": "Groq",
-            "url": "https://api.groq.com/openai/v1/chat/completions",
-            "model": "openai/gpt-oss-20b",
-            "api_key": GROQ_API_KEY
-        })
-    if LLM_API_KEY:
-        providers.append({
-            "name": "Local Model",
-            "url": LLM_URL,
-            "model": LLM_MODEL,
-            "api_key": LLM_API_KEY
-        })
-
-    for provider in providers:
-        logger.info(f"Trying LLM provider: {provider['name']} ({provider['model']})")
-        headers = {
+    req = urllib.request.Request(
+        config["url"],
+        data=json.dumps(payload).encode("utf-8"),
+        headers={
             "Content-Type": "application/json",
-            "Authorization": f"Bearer {provider['api_key']}",
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
-        }
+            "Authorization": f"Bearer {config['api_key']}",
+        },
+        method="POST",
+    )
 
-        payload = {
-            "model": provider["model"],
-            "messages": [
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": user_prompt}
-            ],
-            "temperature": 0.1,
-        }
-
-        req = urllib.request.Request(
-            provider["url"],
-            data=json.dumps(payload).encode("utf-8"),
-            headers=headers,
-            method="POST"
-        )
-
-        try:
-            with urllib.request.urlopen(req, timeout=60) as response:
-                response_data = json.loads(response.read().decode("utf-8"))
-                content = response_data["choices"][0]["message"]["content"].strip()
-
-                result = _extract_json(content)
-                if result is None:
-                    logger.error(f"Could not extract JSON from {provider['name']} response: {content[:200]}")
-                    continue
-
-                return result
-
-        except urllib.error.HTTPError as e:
-            logger.warning(f"{provider['name']} HTTP Error: {e.code} {e.reason}\n{e.read().decode('utf-8')}")
-        except urllib.error.URLError as e:
-            logger.warning(f"{provider['name']} URL Error: {e.reason}")
-        except Exception as e:
-            logger.warning(f"{provider['name']} Unexpected error: {e}")
-
-        logger.info(f"Falling back to next provider after {provider['name']} failure...")
-
-    logger.error("All LLM providers failed.")
-    return None
+    try:
+        with urllib.request.urlopen(req, timeout=max(1, int(timeout_s))) as response:
+            data = json.loads(response.read().decode("utf-8"))
+        return (data["choices"][0]["message"]["content"] or "").strip()
+    except Exception as e:
+        logger.warning(f"vision_call failed: {e}")
+        return ""
 

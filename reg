@@ -1,0 +1,4 @@
+#!/bin/bash
+# Shortcut to run registry_tool.py with the project's venv
+DIR="$(cd "$(dirname "$0")" && pwd)"
+exec "$DIR/.venv/bin/python" "$DIR/registry_tool.py" "$@"

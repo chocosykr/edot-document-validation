@@ -4,29 +4,35 @@ from typing import TypedDict
 
 import requests
 
-from config import (
-    LLM_URL,
-    LLM_MODEL,
-    LLM_API_KEY
-)
+from utils.llm_client import get_llm_config
 
 logger = logging.getLogger(__name__)
 
 
 class RawLookupCredentials(TypedDict, total=False):
     """
-    REAL lookup values (document number, DOB) taken from the raw extraction.
+    REAL lookup values (document number, DOB, and document-sourced identity
+    fields) taken from the raw extraction.
 
     A deliberately distinct type from RedactedProfile: passing one where the
     other is expected should be a type error, not a silent runtime bug that
     submits redaction tokens like [DOCUMENT_NUMBER] to a live registry.
-    Only these two keys may ever be present (a key is absent when no valid
-    value was extracted); values are validated non-token strings by
-    split_credentials.
+    A key is absent when no valid value was extracted; values are validated
+    non-token strings by split_credentials.
+
+    passport_number and serial_number are first-class credential keys since
+    September 2026: registries such as Myanmar's DMA require the holder's
+    passport number and the certificate serial as LOOKUP inputs. They are
+    document-sourced identity fields (printed on the document or its
+    annexes), so they belong here — without them the extraction silently
+    dropped perfectly-read values and the method could never be fed.
     """
     document_number: str
     date_of_birth: str
     full_name: str
+    passport_number: str
+    serial_number: str
+    cdc_number: str
 
 
 class RedactedProfile(TypedDict, total=False):
@@ -67,13 +73,17 @@ def extract_and_redact(ocr_result: dict) -> dict:
         indent=2
     )
 
+    # Shared local/frontier toggle (utils.llm_client.get_llm_config): the
+    # endpoint is always LLM_URL; LLM_MODEL selects the model.
+    config = get_llm_config()
+
     headers = {
-        "Authorization": f"Bearer {LLM_API_KEY}",
+        "Authorization": f"Bearer {config['api_key']}",
         "Content-Type": "application/json"
     }
 
     payload = {
-        "model": LLM_MODEL,
+        "model": config["model"],
         "messages": [
             {
                 "role": "user",
@@ -84,7 +94,7 @@ def extract_and_redact(ocr_result: dict) -> dict:
     }
 
     response = requests.post(
-        LLM_URL,
+        config["url"],
         headers=headers,
         json=payload,
         timeout=180
@@ -119,7 +129,17 @@ def split_credentials(extracted: dict) -> tuple[RedactedProfile, RawLookupCreden
     # valid value is OMITTED (not empty) so the established contract —
     # empty credentials dict when nothing valid was extracted — is kept.
     clean: RawLookupCredentials = RawLookupCredentials()
-    for key in ("document_number", "date_of_birth", "full_name"):
+    # Strict allowlist, NOT a passthrough filter: this block exists solely for
+    # the real lookup values the extraction prompt enumerates (see
+    # prompts/local_extraction.txt). Anything outside these keys is extractor
+    # noise or mis-filed OCR text (a stray name/address/vessel fragment) that
+    # must never masquerade as a "real" credential downstream — membership in
+    # this dict is treated as ground truth by the engine (executor inputs,
+    # field comparison) and by the debug-log PII scrub in main.py. If the
+    # extraction prompt ever gains a fourth lookup key, extend this tuple
+    # WITH the TypedDict and the test in tests/test_extractor_split.py.
+    for key in ("document_number", "date_of_birth", "full_name",
+                "passport_number", "serial_number", "cdc_number"):
         value = creds.get(key)
         if isinstance(value, str) and value.strip() and not value.strip().startswith("["):
             clean[key] = value.strip()

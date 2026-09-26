@@ -28,6 +28,8 @@ Do not include:
 - Personal identification numbers
 - Other directly identifying personal information
 
+Do NOT redact physical identifying characteristics or marks (e.g. "SCAR ON RIGHT CHEEK", "MOLE ON LEFT HAND") — these are non-PII document attributes used for registry validation and should be preserved as raw text in identifying_fields.identifying_characteristics.
+
 Replace sensitive values with descriptive tokens.
 
 Examples:
@@ -50,6 +52,9 @@ Therefore, extract the real values into `raw_lookup_credentials`:
 
 - `document_number`: the real document number exactly as printed on the document.
 - `date_of_birth`: the real date of birth exactly as printed (preserve the printed format; do not normalize).
+- `passport_number`: the holder's passport number IF it is printed on this document or its annexes. Many certificates do not print it — then return null. Never guess it.
+- `serial_number`: the certificate's serial number IF one is printed (often labelled "Serial", "Certificate No.", or a slash-form like S/2024/0042). Return null when absent. Never guess it.
+- `cdc_number`: the seafarer's CDC/SIRB book number IF it is printed on THIS document (labels like "CDC No", "BOOK NO.", "SIRB No."). Return null when absent. Never guess it.
 
 Rules for this block:
 - These values are consumed in memory by the validation engine at execution
@@ -112,7 +117,10 @@ Return ONLY valid JSON:
   "raw_lookup_credentials": {
     "document_number": null,
     "date_of_birth": null,
-    "full_name": null
+    "full_name": null,
+    "passport_number": null,
+    "serial_number": null,
+    "cdc_number": null
   },
 
   "issue_date": null,

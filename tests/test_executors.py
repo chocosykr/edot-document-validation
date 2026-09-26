@@ -4,7 +4,8 @@ Tests for Stage 6 — Website and API Method Implementations.
 Unit tests:
   - executor auto-selection by MethodType
   - MANUAL method returns VALIDATION_UNAVAILABLE immediately
-  - BROWSER stub returns VALIDATION_UNAVAILABLE
+  - BROWSER executor with empty steps completes as TECHNICAL_FAILURE (browser
+    implementation does not hang; a no-op method cannot verify anything)
 
 Integration test (real Docker, real HTTP):
   - HTTP executor against httpbin.org/get (public echo API)
@@ -179,14 +180,16 @@ class TestHTTPExecutorIntegration(unittest.TestCase):
                          msg=f"Logs: {result.logs}")
         self.assertEqual(result.evidence.get("method_type"), "QR_URL")
 
-    def test_browser_executor_returns_unavailable(self):
-        """Browser stub should return VALIDATION_UNAVAILABLE."""
+    def test_browser_executor_empty_steps_technical_failure(self):
+        """A BROWSER method with no steps cannot produce evidence: it must
+        return TECHNICAL_FAILURE (never UNCERTAIN/INVALID) without hanging."""
         method = _method(MethodType.BROWSER, source_url="https://example.com")
         req = ExecutionRequest(method=method, inputs={})
         result = self.runner.execute_method(req)
 
-        self.assertEqual(result.decision_status, ExecutionDecisionStatus.VALIDATION_UNAVAILABLE,
+        self.assertEqual(result.decision_status, ExecutionDecisionStatus.TECHNICAL_FAILURE,
                          msg=f"Logs: {result.logs}")
+        self.assertIn("reason", result.evidence)
 
 
 if __name__ == "__main__":

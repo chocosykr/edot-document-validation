@@ -40,7 +40,6 @@ from discovery.agent import run_discovery
 from registry.models import ValidationMethod, MethodStatus, MethodType, CURRENT_METHOD_SCHEMA
 from registry.document_types import profile_document_type_key
 from registry.repository import MethodRegistry
-from registry.seed_store import SeedStore
 from generation.generator import generate_candidate_method
 from execution.docker_runner import DockerMethodRunner
 from execution.models import ExecutionRequest, ExecutionDecisionStatus
@@ -99,7 +98,6 @@ class ValidationEngine:
         runner: Optional[DockerMethodRunner] = None,
         enable_discovery: bool = True,
         credential_provider: Optional[Callable[[], Optional[Dict[str, str]]]] = None,
-        seed_store: Optional["SeedStore"] = None,
     ):
         """
         credential_provider: optional callable returning the REAL lookup
@@ -109,25 +107,25 @@ class ValidationEngine:
         NEVER be submitted to a live endpoint, so executor inputs are built
         exclusively from this provider.
 
-        seed_store: optional SeedStore holding the encrypted seed credential
-        (one real, confirmed-valid record per registry/document-type,
-        onboarded once by a consenting person). The seed — NOT the current
-        document's values — is the real-input source for the discriminator
-        discovery probe; a seed valid for one registry proves nothing about
-        any other registry.
-
-        Values from both sources stay in memory only: never logged, never
-        persisted (document number and DOB are PII — no exceptions). Entry
-        points without a raw profile (MCP server, batch) leave
-        credential_provider unset; the engine then refuses to run methods
-        requiring those inputs instead of submitting tokens.
+        Values stay in memory only: never logged, never persisted (document
+        number and DOB are PII — no exceptions). Entry points without a raw
+        profile (MCP server, batch) leave credential_provider unset; the
+        engine then refuses to run methods requiring those inputs instead of
+        submitting tokens.
         """
         self.registry = registry or MethodRegistry()
         self.runner = runner or DockerMethodRunner()
-        self.validator = MethodValidator(runner=self.runner, registry=self.registry)
+        # The engine's validator exists to run the generator's structural
+        # test (known-fake TEST_STRUCTURAL_001 against the live endpoint), so
+        # it is the one caller allowed to submit those marker values. Real
+        # executions (_execute_and_decide) go through the strict runner guard.
+        self.validator = MethodValidator(
+            runner=self.runner,
+            registry=self.registry,
+            allow_structural_test_values=True,
+        )
         self.enable_discovery = enable_discovery
         self.credential_provider = credential_provider
-        self.seed_store = seed_store
 
     # ------------------------------------------------------------------
     # Public entry point
@@ -242,10 +240,11 @@ class ValidationEngine:
     ) -> ValidationDecision:
         # Generate candidate
         try:
+            available_inputs = list(self._build_inputs(redacted_profile).keys())
             candidate = generate_candidate_method(
                 redacted_profile,
                 source_info,
-                seed_provider=self._seed_provider(redacted_profile),
+                available_inputs=available_inputs,
             )
         except Exception as e:
             logger.error("Method generation failed: %s", e)
@@ -278,73 +277,13 @@ class ValidationEngine:
         )
         return self._execute_and_decide(candidate, redacted_profile)
 
-    def _seed_provider(
-        self, redacted_profile: Dict[str, Any]
-    ) -> Optional[Callable[[], Optional[Dict[str, str]]]]:
-        """
-        Build the real-input source for the discriminator-discovery probe.
-
-        Policy (anti-circularity — the document under validation must never
-        calibrate the discriminator that judges it):
-          - Seed store wired (production wiring): the ONLY real-input source
-            is the STORED SEED for (issuing_country, document_type). If no
-            seed is onboarded for the scope — or the store is unreadable —
-            return None so the probe runs one-sided (REJECTED-only; the
-            method stays capped at evidence_quality LOW). The current
-            document's raw extraction is NEVER substituted: it may be
-            forged, and probing with it would cache a discriminator learned
-            from untrusted data, silently.
-          - No seed store at all (legacy wiring/tests): backward-compatible
-            fallback to the current document's raw extraction via
-            credential_provider. The values still pass the same non-token
-            guard as executor inputs.
-
-        The returned callable decrypts lazily so the seed plaintext exists in
-        memory only while the probe runs; no seed value is ever logged.
-        """
-        if self.seed_store is not None:
-            country = redacted_profile.get("issuing_country") or ""
-            doc_type = redacted_profile.get("document_type") or ""
-            try:
-                if self.seed_store.has_seed(country, doc_type):
-                    def seed_from_store():
-                        values = self.seed_store.get_seed(country, doc_type) or {}
-                        if isinstance(values, dict):
-                            workflow = values.get("workflow_params") or {}
-                            if workflow:
-                                return {**values, "workflow_params": dict(workflow)}
-                        return values
-                    return seed_from_store
-            except Exception as e:
-                logger.warning("Seed store lookup failed: %s", e)
-            # Seed store in force but no usable seed for this scope: probe
-            # without real inputs (REJECTED-only) — never substitute the
-            # document under validation.
-            return None
-
-        if self.credential_provider is None:
-            return None
-
-        def seed_from_raw_extraction():
-            values = self.credential_provider() or {}
-            if not isinstance(values, dict):
-                return None
-            clean = {
-                k: v.strip()
-                for k, v in values.items()
-                if isinstance(v, str) and v.strip() and not v.strip().startswith("[")
-            }
-            return clean or None
-
-        return seed_from_raw_extraction
-
     def _execute_and_decide(
         self,
         method: ValidationMethod,
         redacted_profile: Dict[str, Any],
     ) -> ValidationDecision:
         """Build inputs, guard required ones, execute, and build the decision."""
-        inputs = self._build_inputs(redacted_profile)
+        inputs = self._build_inputs(redacted_profile, method=method)
 
         missing = self._missing_required_inputs(method, inputs)
         if missing:
@@ -364,11 +303,108 @@ class ValidationEngine:
 
         if (method.expected_responses or {}).get("comparison_mode") == "field_match":
             raw_profile = self.credential_provider() if self.credential_provider else {}
-            exec_result = compare_response(exec_result, raw_profile or {})
+            raw_profile = dict(raw_profile or {})
+
+            # Merge non-PII fields from the redacted profile so that field
+            # mapping discovery and comparison can match on ALL available
+            # document fields (e.g. expiry_date, identifying marks), not just
+            # the 3 traditional credential fields.
+            for key in ("expiry_date", "issue_date"):
+                value = redacted_profile.get(key)
+                if value and isinstance(value, str) and not value.startswith("["):
+                    raw_profile.setdefault(key, value)
+            # identifying_fields may contain non-PII like identifying marks
+            id_fields = redacted_profile.get("identifying_fields")
+            if isinstance(id_fields, dict):
+                for key, value in id_fields.items():
+                    if value and isinstance(value, str) and not value.startswith("["):
+                        raw_profile.setdefault(key, value)
+
+            # Use the method's own discovered field mapping
+            field_mapping = (method.expected_responses or {}).get("field_mapping")
+
+            # If no mapping exists yet and we have a real, non-empty response
+            # that is not a technical failure (e.g. an HTTP 400 CAPTCHA error),
+            # discover one on the fly using the LLM.
+            if (
+                not field_mapping 
+                and exec_result.raw_response 
+                and exec_result.decision_status != ExecutionDecisionStatus.TECHNICAL_FAILURE
+            ):
+                field_mapping = self._discover_and_store_mapping(
+                    method, exec_result.raw_response, raw_profile,
+                )
+
+            exec_result = compare_response(exec_result, raw_profile, field_mapping=field_mapping)
 
         return self._build_decision(exec_result, method)
 
-    def _build_inputs(self, redacted_profile: Dict[str, Any]) -> Dict[str, str]:
+    def _discover_and_store_mapping(
+        self,
+        method: ValidationMethod,
+        raw_response: str,
+        raw_profile: Dict[str, str],
+    ) -> Optional[Dict[str, Any]]:
+        """Discover response field mapping using the LLM and store it on the method.
+
+        Called exactly once per method when a real, non-empty response comes back
+        and the method has no discovered mapping yet. The mapping is stored in
+        expected_responses.field_mapping and persisted to the registry.
+        """
+        from validation.response_mapping import discover_field_mapping
+
+        logger.info(
+            "Discovering response field mapping for method %s", method.method_id
+        )
+
+        field_mapping = discover_field_mapping(raw_response, raw_profile)
+
+        if not field_mapping:
+            logger.warning(
+                "Field mapping discovery returned nothing for method %s",
+                method.method_id,
+            )
+            return None
+
+        text_mappings = field_mapping.get("text_mappings", {})
+        image_fields = field_mapping.get("image_fields", {})
+
+        if not text_mappings and not image_fields:
+            logger.warning(
+                "Discovered mapping has no usable fields for method %s",
+                method.method_id,
+            )
+            return None
+
+        # Store the mapping on the method for future comparisons
+        expected = dict(method.expected_responses or {})
+        expected["field_mapping"] = field_mapping
+        method.expected_responses = expected
+
+        # Persist to registry
+        if self.registry:
+            try:
+                self.registry.register_method(method)
+                logger.info(
+                    "Stored discovered field mapping for method %s: "
+                    "%d text mappings, %d image fields",
+                    method.method_id,
+                    len(text_mappings),
+                    len(image_fields),
+                )
+            except Exception as e:
+                logger.warning(
+                    "Failed to persist field mapping for method %s: %s",
+                    method.method_id, e,
+                )
+
+        return field_mapping
+
+    def _build_inputs(
+        self,
+        redacted_profile: Dict[str, Any],
+        method: Optional[ValidationMethod] = None,
+    ) -> Dict[str, str]:
         """
         Build the inputs the executor scripts need.
 
@@ -380,13 +416,28 @@ class ValidationEngine:
 
         Non-PII lookup keys (e.g. a QR verification_url) still come from the
         redacted profile.
+
+        The provider is called with the method's required_inputs when it
+        accepts an argument. A person-folder provider
+        (fixtures/person_folder.py) uses that list to resolve missing
+        required IDENTITY keys from the subject's other documents — lookup
+        context only; it never changes which document is being verified.
         """
         inputs: Dict[str, str] = {}
 
         credentials: Dict[str, str] = {}
         if self.credential_provider is not None:
             try:
-                credentials = self.credential_provider() or {}
+                try:
+                    credentials = (
+                        self.credential_provider(
+                            list((method.required_inputs if method else []) or [])
+                        )
+                        or {}
+                    )
+                except TypeError:
+                    # Provider predates the required_inputs argument.
+                    credentials = self.credential_provider() or {}
             except Exception as e:
                 logger.warning("credential_provider failed: %s", e)
                 credentials = {}
@@ -394,13 +445,10 @@ class ValidationEngine:
         if not isinstance(credentials, dict):
             credentials = {}
 
-        doc_number = str(credentials.get("document_number") or "").strip()
-        if doc_number and not doc_number.startswith("["):
-            inputs["document_number"] = doc_number
-
-        dob = str(credentials.get("date_of_birth") or "").strip()
-        if dob and not dob.startswith("["):
-            inputs["date_of_birth"] = dob
+        for key, value in credentials.items():
+            val_str = str(value).strip()
+            if val_str and not val_str.startswith("["):
+                inputs[key] = val_str
 
         # A QR/URL method needs the verification_url from identifying_fields
         identifying = redacted_profile.get("identifying_fields", {})
@@ -409,14 +457,32 @@ class ValidationEngine:
             if url:
                 inputs["verification_url"] = str(url)
 
+        doc_type_key = redacted_profile.get("document_type_key")
+        if doc_type_key:
+            inputs["document_type_key"] = str(doc_type_key)
+
+        country = redacted_profile.get("issuing_country")
+        if country:
+            inputs["issuing_country"] = str(country)
+
         return inputs
 
     @staticmethod
     def _missing_required_inputs(
         method: ValidationMethod, inputs: Dict[str, str]
     ) -> List[str]:
-        """Required inputs the engine could not supply real values for."""
-        return [k for k in (method.required_inputs or []) if not inputs.get(k)]
+        """Required inputs the engine could not supply real values for.
+
+        Fields declared contact_only_inputs (notification email/phone etc.,
+        no bearing on the identity match) are exempt: the runner synthesizes
+        a plausible-format inert value for them at execution time.
+        """
+        from execution.safety import contact_only_inputs
+        contact_fields = contact_only_inputs(method)
+        return [
+            k for k in (method.required_inputs or [])
+            if not inputs.get(k) and k not in contact_fields
+        ]
 
     def _build_decision(
         self, exec_result, method: ValidationMethod
