@@ -52,3 +52,62 @@ def lookup_source(redacted_profile: dict) -> list[dict]:
         if document_key is not None and document_key in supported:
             results.append(row)
     return results
+
+
+def remember_source(country: str, url: str, document_key: str) -> bool:
+    """Persist a CONFIRMED verification source discovered in the field.
+
+    When discovery + generation + live validation have proven that ``url``
+    verifies ``document_key`` documents for ``country``, the source is saved
+    so every future document of that type routes straight to generation —
+    no search API required (Tavily quota and outages then degrade only
+    FIRST contact with a new registry, never the system as a whole).
+
+    Only called after the full chain has succeeded; never on a guess.
+    Idempotent on (country, url, document_key).
+    """
+    if not country or not url or not document_key:
+        return False
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        columns = {row[1] for row in conn.execute("PRAGMA table_info(sources)")}
+        if "supported_doc_types" not in columns:
+            conn.execute(
+                "ALTER TABLE sources ADD COLUMN supported_doc_types TEXT DEFAULT ''"
+            )
+        existing = conn.execute(
+            "SELECT id, supported_doc_types FROM sources WHERE url = ? AND upper(country) = upper(?)",
+            (url, country),
+        ).fetchone()
+        if existing:
+            supported = {
+                item.strip()
+                for item in (existing[1] or "").split(",")
+                if item.strip()
+            }
+            if document_key in supported:
+                conn.close()
+                return False
+            supported.add(document_key)
+            conn.execute(
+                "UPDATE sources SET supported_doc_types = ? WHERE id = ?",
+                (", ".join(sorted(supported)), existing[0]),
+            )
+        else:
+            conn.execute(
+                "INSERT INTO sources (country, url, access_type, description, supported_doc_types) "
+                "VALUES (?, ?, ?, ?, ?)",
+                (
+                    country,
+                    url,
+                    "CONFIRMED BY PIPELINE",
+                    f"Discovered + live-validated by the pipeline for {document_key}",
+                    document_key,
+                ),
+            )
+        conn.commit()
+        conn.close()
+        return True
+    except Exception as e:
+        print(f"Warning: could not remember source {url}: {e}")
+        return False

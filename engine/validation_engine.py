@@ -35,7 +35,7 @@ Handles:
 import logging
 from typing import Optional, Dict, Any, List, Callable
 
-from db.lookup import lookup_source
+from db.lookup import lookup_source, remember_source
 from discovery.agent import run_discovery
 from registry.models import ValidationMethod, MethodStatus, MethodType, CURRENT_METHOD_SCHEMA
 from registry.document_types import profile_document_type_key
@@ -55,27 +55,38 @@ from engine.models import (
 
 logger = logging.getLogger(__name__)
 
-# Default test cases used when validating a freshly generated method.
-# These are intentionally generic; real test cases should be seeded by
-# the generator from source documentation.
+# Default test case used when validating a freshly generated method. Inputs
+# are built PER METHOD (see _structural_test_case): the probe must satisfy
+# every required input the method declares, or the runner refuses the
+# submission before any request is sent and the method can never validate.
 #
-# NOTE: `date_of_birth` is REQUIRED here, not optional. Methods generated
-# from an extracted XHR contract map dob -> {{date_of_birth}} and list it in
-# required_inputs. If the structural test omits DOB, the executor submits an
-# empty DOB string, which can produce a third server response that neither
-# confirmed discriminator accounts for — the structural test would then fail,
-# or pass for the wrong reason.
-_GENERIC_TEST_CASES = [
-    TestCase(
+# NOTE: `date_of_birth` is REQUIRED for document-number methods, not
+# optional. Methods generated from an extracted XHR contract map
+# dob -> {{date_of_birth}} and list it in required_inputs. If the structural
+# test omits DOB, the executor submits an empty DOB string, which can produce
+# a third server response that neither confirmed discriminator accounts for —
+# the structural test would then fail, or pass for the wrong reason.
+def _structural_test_case(method=None) -> TestCase:
+    from execution.safety import structural_test_value_for, contact_only_inputs
+
+    inputs = {
+        "document_number": "TEST_STRUCTURAL_001",
+        "date_of_birth": "01/01/1990",
+    }
+    if method is not None:
+        for name in (method.required_inputs or []):
+            if name in inputs or not str(name or "").strip():
+                continue
+            inputs[name] = structural_test_value_for(name)
+    return TestCase(
         name="structural_check",
-        inputs={
-            "document_number": "TEST_STRUCTURAL_001",
-            "date_of_birth": "01/01/1990",
-        },
+        inputs=inputs,
         expected_decision="REJECTED",
         is_required=True,
-    ),
-]
+    )
+
+
+_GENERIC_TEST_CASES = [_structural_test_case()]
 
 # Evidence quality by method type
 _QUALITY_MAP: Dict[MethodType, EvidenceQuality] = {
@@ -257,8 +268,9 @@ class ValidationEngine:
             logger.error("Failed to register candidate: %s", e)
             return self._failure(f"Registry error: {e}")
 
-        # Validate candidate (bounded test in Docker)
-        report = self.validator.validate(candidate, _GENERIC_TEST_CASES)
+        # Validate candidate (bounded test in Docker) — test inputs built
+        # for THIS method so every required input is satisfiable.
+        report = self.validator.validate(candidate, [_structural_test_case(candidate)])
 
         if report.status != ValidationReportStatus.PASSED:
             logger.warning(
@@ -275,6 +287,26 @@ class ValidationEngine:
         logger.info(
             "Candidate %s passed validation. Executing.", candidate.method_id
         )
+        # Cumulative knowledge: the structural test just proved this source
+        # deterministically refuses a known-fake lookup, i.e. the URL drives
+        # a real verification endpoint. Remember it for the routing DB so
+        # future documents of this type skip discovery entirely.
+        try:
+            doc_key = (candidate.expected_responses or {}).get("document_type_key")
+            if doc_key and source_info.get("url"):
+                if remember_source(
+                    redacted_profile.get("issuing_country") or "",
+                    source_info.get("url"),
+                    doc_key,
+                ):
+                    logger.info(
+                        "Remembered source %s for %s/%s",
+                        source_info.get("url"),
+                        redacted_profile.get("issuing_country"),
+                        doc_key,
+                    )
+        except Exception as e:
+            logger.warning("remember_source failed (non-fatal): %s", e)
         return self._execute_and_decide(candidate, redacted_profile)
 
     def _execute_and_decide(
@@ -376,15 +408,20 @@ class ValidationEngine:
             )
             return None
 
-        # Store the mapping on the method for future comparisons
+        # Store the mapping on the method for future comparisons.
+        # Persisted via the granular expected_responses update: re-registering
+        # the whole method here would write back this object's stale status
+        # (TESTING) over the registry's ACTIVE row and leave the version
+        # untouched — a silent demotion of a working method.
         expected = dict(method.expected_responses or {})
         expected["field_mapping"] = field_mapping
         method.expected_responses = expected
 
-        # Persist to registry
         if self.registry:
             try:
-                self.registry.register_method(method)
+                self.registry.update_expected_responses(
+                    method.method_id, expected
+                )
                 logger.info(
                     "Stored discovered field mapping for method %s: "
                     "%d text mappings, %d image fields",

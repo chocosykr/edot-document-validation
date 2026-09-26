@@ -114,9 +114,10 @@ class TestValidationEngine(unittest.TestCase):
 
     # 2. No active method + DB source ----------------------------------------
 
+    @patch("engine.validation_engine.remember_source")
     @patch("engine.validation_engine.lookup_source")
     @patch("engine.validation_engine.generate_candidate_method")
-    def test_db_source_triggers_generation_and_execution(self, mock_gen, mock_lookup):
+    def test_db_source_triggers_generation_and_execution(self, mock_gen, mock_lookup, mock_remember):
         db_path = "test_engine_2.db"
         try:
             registry = MethodRegistry(db_path=db_path)
@@ -142,9 +143,10 @@ class TestValidationEngine(unittest.TestCase):
 
     # 3. No active method + no DB source + discovery -------------------------
 
+    @patch("engine.validation_engine.remember_source")
     @patch("engine.validation_engine.lookup_source")
     @patch("engine.validation_engine.generate_candidate_method")
-    def test_discovery_triggered_when_no_db_source(self, mock_gen, mock_lookup):
+    def test_discovery_triggered_when_no_db_source(self, mock_gen, mock_lookup, mock_remember):
         db_path = "test_engine_3.db"
         try:
             registry = MethodRegistry(db_path=db_path)

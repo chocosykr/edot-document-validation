@@ -1251,6 +1251,16 @@ def generate_candidate_method(
     if not method_id or method_id == "M_12345":
         llm_output["method_id"] = f"M_{uuid.uuid4().hex[:8].upper()}"
 
+    # source_url is metadata about the CONFIRMED source — injected from
+    # source_info rather than trusted to the model's echo. Same for the
+    # document identity fields, which come from the classified profile.
+    if not str(llm_output.get("source_url") or "").strip():
+        llm_output["source_url"] = source_url or ""
+    if not str(llm_output.get("country") or "").strip():
+        llm_output["country"] = str(redacted_profile.get("issuing_country") or "")
+    if not str(llm_output.get("document_type") or "").strip():
+        llm_output["document_type"] = str(redacted_profile.get("document_type") or "")
+
     # Force status to TESTING regardless of what the LLM hallucinates
     llm_output["status"] = MethodStatus.TESTING
     # Positive verification is always decided by response-field comparison;
@@ -1269,7 +1279,169 @@ def generate_candidate_method(
     )
     if signatures:
         expected_responses["not_found_signatures"] = signatures
+    # Contact-only declarations survive (they change execution semantics:
+    # which missing inputs are synthesizable vs which refuse the run).
+    llm_contact = (llm_output.get("expected_responses") or {}).get("contact_only_inputs")
+    if isinstance(llm_contact, list) and llm_contact:
+        expected_responses["contact_only_inputs"] = [
+            str(x) for x in llm_contact if str(x or "").strip()
+        ]
     llm_output["expected_responses"] = expected_responses
+
+    # ---- Deterministic post-generation enforcement --------------------
+    placeholder_re = re.compile(r"\{\{([a-zA-Z_][a-zA-Z0-9_]*)\}\}")
+    # The enforcement blocks below all iterate/rewrite execution_steps.
+    steps = llm_output.get("execution_steps") or []
+
+    # Canonical input-name normalization: models tend to name required
+    # inputs after the TARGET SITE's wire fields (CrewCDCNo, CrewPassport,
+    # Serial, ReplyEmail), but the engine's credential provider and the
+    # person-folder cross-document lookup work in CANONICAL document keys
+    # (cdc_number, passport_number, document_number). Renaming the INPUT
+    # (the {{placeholder}}) — never the wire param the site expects — makes
+    # the method executable against real extracted data.
+    _INPUT_ALIASES = [
+        ("cdc", "cdc_number"),
+        ("passport", "passport_number"),
+        ("serial", "document_number"),
+        ("certificateno", "document_number"),
+        ("certificate_no", "document_number"),
+        ("indos", "document_number"),
+        ("dateofbirth", "date_of_birth"),
+        ("dob", "date_of_birth"),
+        ("birthdate", "date_of_birth"),
+        ("email", "email"),          # contact-only by content role
+        ("phone", "phone"),
+        ("mobile", "phone"),
+    ]
+    _CONTACT_INPUTS = {"email", "phone"}
+
+    def _canonical_input_name(name: str) -> str:
+        n = re.sub(r"[^a-z0-9]+", "", str(name or "").lower())
+        for marker, canonical in _INPUT_ALIASES:
+            if marker in n:
+                return canonical
+        return str(name or "").strip()
+
+    declared_inputs = {
+        str(x).strip() for x in (llm_output.get("required_inputs") or [])
+        if str(x or "").strip()
+    }
+    rename_map: dict = {}
+    canonical_inputs: set = set()
+    for name in declared_inputs:
+        canonical = _canonical_input_name(name)
+        canonical_inputs.add(canonical)
+        if canonical != name:
+            rename_map[name] = canonical
+    if rename_map:
+        logger.warning(
+            "Generator: normalizing non-canonical input names %s -> %s",
+            rename_map, sorted(canonical_inputs),
+        )
+        llm_output["required_inputs"] = sorted(canonical_inputs)
+        # Rewrite {{placeholders}} through the same map (wire param NAMES
+        # are untouched; only the template references change).
+        def _rename_value(value):
+            if not isinstance(value, str):
+                return value
+            def _sub(m):
+                return "{{" + rename_map.get(m.group(1), m.group(1)) + "}}"
+            return placeholder_re.sub(_sub, value) if rename_map else value
+        for step in steps:
+            if not isinstance(step, dict):
+                continue
+            for key in ("url", "value", "html"):
+                if isinstance(step.get(key), str):
+                    step[key] = _rename_value(step[key])
+            for container_key in ("params", "json_body"):
+                container = step.get(container_key)
+                if isinstance(container, dict):
+                    for k, v in container.items():
+                        if isinstance(v, str):
+                            container[k] = _rename_value(v)
+
+    # Contact-role inputs (notification email / callback phone) are never
+    # document-sourced; declaring them here makes the execution layer
+    # synthesize an inert value instead of refusing the run.
+    contact_declared = set(
+        (llm_output.get("expected_responses") or {}).get("contact_only_inputs") or []
+    )
+    inferred_contact = (canonical_inputs & _CONTACT_INPUTS) - contact_declared
+    if inferred_contact:
+        expected_responses.setdefault("contact_only_inputs", []).extend(
+            sorted(inferred_contact)
+        )
+        logger.info(
+            "Generator: inferred contact_only_inputs %s", sorted(inferred_contact)
+        )
+    # The LLM proposes SHAPE; schema-critical invariants are enforced in
+    # code (deterministic over probabilistic — a confident wrong method is
+    # worse than a failed generation).
+    method_type_raw = str(llm_output.get("method_type") or "").upper()
+
+    # 1. BROWSER is never acceptable from the generator: the browser
+    #    executor is a stub, so such a method can never execute. Observed
+    #    behaviour: the model picks BROWSER as an escape hatch when it
+    #    cannot find a contract — better to fail loudly than to register a
+    #    doomed candidate.
+    if method_type_raw == "BROWSER":
+        raise RuntimeError(
+            "LLM produced a BROWSER method (stub executor; cannot run). "
+            "The page evidence did not yield an HTTP/form contract."
+        )
+
+    # 2. Every {{placeholder}} in execution_steps must resolve to something
+    #    the execution layer can actually supply: a required input, a
+    #    documented runtime value (captcha round, GET_HTML/EXTRACT_FROM_HTML
+    #    output vars), or an engine-provided context key. Unresolvable
+    #    placeholders would otherwise reach the executor as literal
+    #    "{{name}}" strings — silent junk submissions to live endpoints.
+    _RUNTIME_VARS = {
+        "captcha_text", "captcha_id",          # FETCH_CAPTCHA/SOLVE_CAPTCHA
+        "verification_url",                     # engine: QR methods
+        "document_type_key", "issuing_country", # engine: context keys
+    }
+    declared_inputs = {
+        str(x).strip() for x in (llm_output.get("required_inputs") or [])
+        if str(x or "").strip()
+    }
+
+    output_vars: set = set()
+    for step in steps:
+        if not isinstance(step, dict):
+            continue
+        ov = str(step.get("output_var") or "").strip()
+        if ov:
+            output_vars.add(ov)
+
+    referenced: set = set()
+    for step in steps:
+        if not isinstance(step, dict):
+            continue
+        for value in list((step.get("params") or {}).values()) + list(
+            (step.get("json_body") or {}).values()
+        ) + [step.get("url"), step.get("value"), step.get("html")]:
+            if isinstance(value, str):
+                referenced.update(placeholder_re.findall(value))
+
+    resolvable = declared_inputs | _RUNTIME_VARS | output_vars
+    unknown = referenced - resolvable
+    if unknown:
+        # Placeholders that look like document fields become required inputs
+        # (the engine then refuses honestly at real-execution time if the
+        # document cannot supply them) — anything else is a structural bug.
+        llm_output["required_inputs"] = sorted(declared_inputs | unknown)
+        logger.warning(
+            "Generator: placeholders %s were not resolvable; promoted to "
+            "required_inputs.", sorted(unknown),
+        )
+
+    if not llm_output.get("required_inputs"):
+        raise RuntimeError(
+            "LLM produced a method with no required_inputs and no "
+            "{{placeholders}} — nothing would be looked up."
+        )
 
     # Parse and validate through Pydantic
     return ValidationMethod(**llm_output)

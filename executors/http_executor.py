@@ -64,8 +64,10 @@ Decision logic (in order):
 import base64
 import json
 import os
+import random
 import re
 import sys
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -197,6 +199,62 @@ def substitute_dict(d: dict, inputs: dict) -> dict:
 # POST; a cookieless client gets 400 even with a valid token.
 _OPENER = urllib.request.build_opener(urllib.request.HTTPCookieProcessor())
 
+# Transient network failures — DNS blips, "No route to host", connection
+# resets — killed otherwise-correct runs during testing (one run saw BOTH a
+# host-side DNS resolution failure and an in-container "No route to host" on
+# a registry that answered HTTP 200 seconds later). These are environmental,
+# not method defects, so a short bounded retry with jittered backoff is
+# applied around every request below. A 5xx response is retried the same
+# way: the server was there, the answer just failed.
+_TRANSIENT_ERRNO = {99, 101, 102, 104, 110, 111, 113}  # ECONNRESET, EHOSTUNREACH, ETIMEDOUT, ECONNREFUSED, EHOSTDOWN, ENETUNREACH, EADDRNOTAVAIL... (the Errno values actually observed in sandbox logs)
+_TRANSIENT_MARKERS = (
+    "temporary failure in name resolution",   # DNS (Errno -3)
+    "name or service not known",
+    "no route to host",
+    "connection reset by peer",
+    "connection refused",
+    "network is unreachable",
+    "timed out",
+    "remote end closed connection",
+    "certificate verify failed",
+)
+
+
+def _is_transient(err: Exception) -> bool:
+    text = str(err).lower()
+    if any(m in text for m in _TRANSIENT_MARKERS):
+        return True
+    # URLError wraps an underlying socket.error carrying the errno.
+    errno = getattr(getattr(err, "reason", None), "errno", None) or getattr(err, "errno", None)
+    return errno in _TRANSIENT_ERRNO
+
+
+def _is_5xx(status: int) -> bool:
+    return 500 <= status <= 599
+
+
+def _with_retry(fn, *args, **kwargs):
+    """Wrapper combining exception-retry with 5xx-response retry."""
+    attempts = 3
+    result = None
+    for attempt in range(1, attempts + 1):
+        try:
+            result = fn(*args, **kwargs)
+        except Exception as e:
+            if not _is_transient(e) or attempt == attempts:
+                raise
+            time.sleep(1.5 * (2 ** (attempt - 1)) + random.uniform(0, 0.5))
+            continue
+        if (
+            isinstance(result, tuple) and result
+            and isinstance(result[0], int) and _is_5xx(result[0])
+            and attempt < attempts
+        ):
+            time.sleep(1.5 * (2 ** (attempt - 1)) + random.uniform(0, 0.5))
+            continue
+        return result
+    return result
+
 
 def http_get(url: str, params: dict) -> tuple[int, str]:
     if params:
@@ -207,6 +265,26 @@ def http_get(url: str, params: dict) -> tuple[int, str]:
             return resp.status, resp.read().decode("utf-8", errors="replace")
     except urllib.error.HTTPError as e:
         return e.code, e.read().decode("utf-8", errors="replace")
+
+
+def http_get_retry(url: str, params: dict) -> tuple[int, str]:
+    return _with_retry(http_get, url, params)
+
+
+def http_post_json_retry(url: str, body: dict) -> tuple[int, str]:
+    return _with_retry(http_post_json, url, body)
+
+
+def http_post_form_retry(url: str, params: dict) -> tuple[int, str]:
+    return _with_retry(http_post_form, url, params)
+
+
+def http_post_query_retry(url: str) -> tuple[int, str]:
+    return _with_retry(http_post_query, url)
+
+
+def http_get_bytes_retry(url: str) -> tuple[int, bytes]:
+    return _with_retry(http_get_bytes, url)
 
 
 def http_post_json(url: str, body: dict) -> tuple[int, str]:
@@ -298,7 +376,7 @@ def _fetch_captcha(url: str, step: dict) -> tuple[str, str, str]:
     image_field = step.get("image_field") or "captchaImage"
     id_field = step.get("id_field") or "captchaId"
 
-    status, body = http_get(url, {})
+    status, body = http_get_retry(url, {})
     if status and status >= 400:
         return "", "", f"FETCH_CAPTCHA returned HTTP {status}"
 
@@ -325,7 +403,7 @@ def _fetch_captcha(url: str, step: dict) -> tuple[str, str, str]:
     if image_val.lower().startswith("data:image"):
         image_val = image_val.split(",", 1)[-1]
     elif image_val.lower().startswith(("http://", "https://")):
-        status2, raw = http_get_bytes(image_val)
+        status2, raw = http_get_bytes_retry(image_val)
         if status2 and status2 >= 400:
             return "", "", f"CAPTCHA image URL returned HTTP {status2}"
         image_val = base64.b64encode(raw).decode("ascii")
@@ -359,6 +437,30 @@ def http_post_query(url: str) -> tuple[int, str]:
 # Decision logic
 # ---------------------------------------------------------------------------
 
+# Captcha-rejection responses (a wrong/expired captcha answer) are
+# environment noise, never a document verdict — the executor redoes the
+# captcha round in-run (see the REQUEST retry loop) instead of failing the
+# method. Measured on dgshippingbsid.in: the same flow succeeds 6/6
+# host-side, so a rejection is a per-attempt event, not a method defect.
+_CAPTCHA_REJECTION_MARKERS = (
+    "invalid or expired captcha",
+    "invalid captcha", "expired captcha", "captcha is invalid",
+    "captcha does not match", "captcha mismatch", "wrong captcha",
+    "incorrect captcha", "captcha verification failed",
+    "security code is invalid", "security code incorrect",
+    "please enter a valid captcha",
+)
+
+
+def _is_captcha_rejection(status_code, body: str) -> bool:
+    if not status_code or status_code < 400 or not body:
+        return False
+    low = body.lower()
+    if any(m in low for m in _CAPTCHA_REJECTION_MARKERS):
+        return True
+    return "captcha" in low and "try again" in low
+
+
 def _matches_not_found_signature(status_code, body: str, expected: dict) -> bool:
     """Does this response match a method-declared not-found signature?
 
@@ -377,7 +479,16 @@ def _matches_not_found_signature(status_code, body: str, expected: dict) -> bool
     signatures = expected.get("not_found_signatures")
     if not isinstance(signatures, list):
         return False
-    body_lower = body.lower()
+    # Whitespace-insensitive comparison: the same endpoint has been observed
+    # to emit '{"message": "..."}' and '{"message":"..."}' for different
+    # error classes, so an exact-substring match silently fails on serializer
+    # formatting drift. Removing ALL whitespace makes the match depend on the
+    # response CONTENT, not its JSON formatting (both sides get identical
+    # treatment, so containment semantics are preserved).
+    def _norm(text: str) -> str:
+        return "".join(str(text).lower().split())
+
+    body_norm = _norm(body)
     for signature in signatures:
         if not isinstance(signature, dict):
             continue
@@ -388,7 +499,7 @@ def _matches_not_found_signature(status_code, body: str, expected: dict) -> bool
         contains = signature.get("contains")
         if not isinstance(contains, str) or not contains.strip():
             continue  # a status-only rule is too broad — never honoured
-        if signature_status == status_code and contains.strip().lower() in body_lower:
+        if signature_status == status_code and _norm(contains) in body_norm:
             return True
     return False
 
@@ -445,94 +556,134 @@ def main():
     technical_error = None
     captcha_image_b64 = ""
 
-    for step in steps:
-        action = step.get("action", "GET").upper()
+    # The index of the FETCH_CAPTCHA step (if any). When a request is refused
+    # with a captcha-rejection response, the captcha round — fetch, solve,
+    # request — is redone in-run (bounded), mirroring the site SPA's own
+    # refresh-and-retry behavior, instead of failing the whole method.
+    captcha_step_index = None
+    for i, s in enumerate(steps):
+        if str(s.get("action", "")).upper() == "FETCH_CAPTCHA":
+            captcha_step_index = i
+            break
 
-        # Canonical schema: {"action": "REQUEST", "method": "GET"|"POST", ...}
-        # (as documented in the generation and self-healing prompts). The bare
-        # "GET"/"POST" action forms are kept as shorthand.
-        if action == "REQUEST":
-            action = step.get("method", "GET").upper()
+    def _run_steps(seq):
+        """Run a step sequence; returns (status_code, body, technical_error).
 
-        url = substitute(step.get("url", method.get("source_url", "")), inputs)
-        params = substitute_dict(step.get("params", {}), inputs)
-        json_body = substitute_dict(step.get("json_body", {}), inputs)
+        The captcha artifacts (image/id/text) live in the shared `inputs`
+        dict / captured variable, so re-running the sequence from the
+        FETCH_CAPTCHA step produces a fresh captcha round.
+        """
+        nonlocal captcha_image_b64
+        sc = None
+        bd = ""
+        terr = None
+        for step in seq:
+            action = step.get("action", "GET").upper()
 
-        if action == "FETCH_CAPTCHA":
-            captcha_image_b64, captcha_id, err = _fetch_captcha(url, step)
-            if err:
-                technical_error = err
-                break
-            inputs["captcha_id"] = captcha_id
-            print(f"[HTTP] FETCH_CAPTCHA ok: image_b64_len={len(captcha_image_b64)} "
-                  f"captcha_id={'set' if captcha_id else 'absent'}")
-        elif action == "SOLVE_CAPTCHA":
-            if _vision_call is None:
-                technical_error = "SOLVE_CAPTCHA unavailable: shared vision client not importable"
-                break
-            if not captcha_image_b64:
-                technical_error = "SOLVE_CAPTCHA called before a CAPTCHA image was fetched"
-                break
-            reply = _vision_call(
-                CAPTCHA_VISION_PROMPT, captcha_image_b64,
-                timeout_s=CAPTCHA_VISION_TIMEOUT_S,
-            )
-            solved = _sanitize_captcha_text(reply)
-            if not solved:
-                technical_error = "SOLVE_CAPTCHA: vision model returned no usable characters"
-                break
-            inputs["captcha_text"] = solved
-            print(f"[HTTP] SOLVE_CAPTCHA ok ({len(solved)} chars)")
-        elif action == "GET_HTML":
-            # Fetch an HTML page into a template variable (e.g. the page
-            # carrying an anti-forgery token). Uses the shared session so
-            # the cookie pairs with the token extracted from this response.
-            status_code, body = http_get(url, {})
-            inputs[str(step.get("output_var") or "page_html")] = body
-            print(f"[HTTP] GET_HTML ok: {len(body)} chars -> "
-                  f"{step.get('output_var') or 'page_html'}")
-        elif action == "EXTRACT_FROM_HTML":
-            try:
-                html_var = step.get("html") or ""
-                m = re.match(r"^\{\{([a-zA-Z_][a-zA-Z0-9_]*)\}\}$", html_var.strip())
-                source_html = inputs.get(m.group(1), "") if m else ""
-                value = _extract_regex_from_html(
-                    source_html, str(step.get("selector", ""))
+            # Canonical schema: {"action": "REQUEST", "method": "GET"|"POST", ...}
+            # (as documented in the generation and self-healing prompts). The bare
+            # "GET"/"POST" action forms are kept as shorthand.
+            if action == "REQUEST":
+                action = step.get("method", "GET").upper()
+
+            url = substitute(step.get("url", method.get("source_url", "")), inputs)
+            params = substitute_dict(step.get("params", {}), inputs)
+            json_body = substitute_dict(step.get("json_body", {}), inputs)
+
+            if action == "FETCH_CAPTCHA":
+                captcha_image_b64, captcha_id, err = _fetch_captcha(url, step)
+                if err:
+                    terr = err
+                    break
+                inputs["captcha_id"] = captcha_id
+                print(f"[HTTP] FETCH_CAPTCHA ok: image_b64_len={len(captcha_image_b64)} "
+                      f"captcha_id={'set' if captcha_id else 'absent'}")
+            elif action == "SOLVE_CAPTCHA":
+                if _vision_call is None:
+                    terr = "SOLVE_CAPTCHA unavailable: shared vision client not importable"
+                    break
+                if not captcha_image_b64:
+                    terr = "SOLVE_CAPTCHA called before a CAPTCHA image was fetched"
+                    break
+                reply = _vision_call(
+                    CAPTCHA_VISION_PROMPT, captcha_image_b64,
+                    timeout_s=CAPTCHA_VISION_TIMEOUT_S,
                 )
-            except ValueError as e:
-                technical_error = str(e)
-                break
-            out_var = str(step.get("output_var") or "")
-            if not out_var:
-                technical_error = "EXTRACT_FROM_HTML: output_var is required"
-                break
-            if not value:
-                technical_error = (
-                    f"EXTRACT_FROM_HTML: selector {step.get('selector')!r} "
-                    "matched nothing in the fetched HTML"
-                )
-                break
-            inputs[out_var] = value
-            print(f"[HTTP] EXTRACT_FROM_HTML ok: {out_var} ({len(value)} chars)")
-        elif action == "GET":
-            status_code, body = http_get(url, params)
-        elif action == "POST" and json_body:
-            status_code, body = http_post_json(url, json_body)
-        elif action == "POST":
-            param_location = step.get("param_location", "body")
-            if param_location == "query":
-                # send(null) pattern: real POST, params on the query string,
-                # explicit empty body.
-                separator = "&" if "?" in url else "?"
-                status_code, body = http_post_query(
-                    url + separator + urllib.parse.urlencode(params)
-                )
+                solved = _sanitize_captcha_text(reply)
+                if not solved:
+                    terr = "SOLVE_CAPTCHA: vision model returned no usable characters"
+                    break
+                inputs["captcha_text"] = solved
+                print(f"[HTTP] SOLVE_CAPTCHA ok ({len(solved)} chars)")
+            elif action == "GET_HTML":
+                # Fetch an HTML page into a template variable (e.g. the page
+                # carrying an anti-forgery token). Uses the shared session so
+                # the cookie pairs with the token extracted from this response.
+                sc, bd = http_get_retry(url, {})
+                inputs[str(step.get("output_var") or "page_html")] = bd
+                print(f"[HTTP] GET_HTML ok: {len(bd)} chars -> "
+                      f"{step.get('output_var') or 'page_html'}")
+            elif action == "EXTRACT_FROM_HTML":
+                try:
+                    html_var = step.get("html") or ""
+                    m = re.match(r"^\{\{([a-zA-Z_][a-zA-Z0-9_]*)\}\}$", html_var.strip())
+                    source_html = inputs.get(m.group(1), "") if m else ""
+                    value = _extract_regex_from_html(
+                        source_html, str(step.get("selector", ""))
+                    )
+                except ValueError as e:
+                    terr = str(e)
+                    break
+                out_var = str(step.get("output_var") or "")
+                if not out_var:
+                    terr = "EXTRACT_FROM_HTML: output_var is required"
+                    break
+                if not value:
+                    terr = (
+                        f"EXTRACT_FROM_HTML: selector {step.get('selector')!r} "
+                        "matched nothing in the fetched HTML"
+                    )
+                    break
+                inputs[out_var] = value
+                print(f"[HTTP] EXTRACT_FROM_HTML ok: {out_var} ({len(value)} chars)")
+            elif action == "GET":
+                sc, bd = http_get_retry(url, params)
+            elif action == "POST" and json_body:
+                sc, bd = http_post_json_retry(url, json_body)
+            elif action == "POST":
+                param_location = step.get("param_location", "body")
+                if param_location == "query":
+                    # send(null) pattern: real POST, params on the query string,
+                    # explicit empty body.
+                    separator = "&" if "?" in url else "?"
+                    sc, bd = http_post_query_retry(
+                        url + separator + urllib.parse.urlencode(params)
+                    )
+                else:
+                    # Default: form-encoded body (existing behaviour)
+                    sc, bd = http_post_form_retry(url, params)
             else:
-                # Default: form-encoded body (existing behaviour)
-                status_code, body = http_post_form(url, params)
-        else:
-            body = f"Unknown action: {action}"
-            status_code = 0
+                bd = f"Unknown action: {action}"
+                sc = 0
+        return sc, bd, terr
+
+    # First pass: the full step sequence.
+    status_code, body, technical_error = _run_steps(steps)
+
+    # Captcha-rejection retry: a wrong/expired captcha answer is environment
+    # noise, not a method defect (the same flow succeeds host-side). Redo
+    # fetch -> solve -> rest-of-sequence in-run, like the site SPA does on
+    # its own captcha failure. Bounded: 3 fresh captcha rounds, then give up.
+    if (
+        technical_error is None
+        and captcha_step_index is not None
+        and _is_captcha_rejection(status_code, body)
+    ):
+        for captcha_attempt in range(1, 4):
+            print(f"[HTTP] captcha rejected — retry {captcha_attempt}/3")
+            status_code, body, technical_error = _run_steps(steps[captcha_step_index:])
+            if technical_error is not None or not _is_captcha_rejection(status_code, body):
+                break
 
     # CAPTCHA fetch/solve failure: never a document verdict.
     if technical_error:
@@ -562,7 +713,10 @@ def main():
     elif status_code and status_code >= 400:
         result = {
             "decision_status": "TECHNICAL_FAILURE",
-            "evidence": {"http_status": status_code},
+            "evidence": {
+                "http_status": status_code,
+                "signature_count": len(expected.get("not_found_signatures") or []),
+            },
             "raw_response": _compact_response(body)
         }
     else:

@@ -17,15 +17,16 @@ from validation.field_comparison import compare_response
 
 logger = logging.getLogger(__name__)
 
-# Retry budget per test case. On a failed attempt, the agentic self-healing
-# loop (LLM rewrites execution_steps from the failure evidence) gets one shot
-# before the next attempt. Raise via VALIDATION_MAX_ATTEMPTS (hard cap 6:
-# each attempt is a Docker run + an LLM healing pass, so retries are not
-# free). 1 = no healing at all — the historical default, which also made the
-# improvement path dead code (the "before final attempt" condition can never
-# hold when only one attempt exists).
+# Retry budget per test case. On a failed attempt, the healing ladder gets
+# one shot before the next attempt: first the mechanical not-found-signature
+# capture/retest (no LLM involved), then the cheap direct LLM rewrite
+# (test-before-adopt), then the full agentic tool-use loop. Raise or lower
+# via VALIDATION_MAX_ATTEMPTS (hard cap 6: each attempt is a Docker run and
+# possibly an LLM pass). The historical default of 1 made every healing path
+# dead code — the "before final attempt" condition can never hold when only
+# one attempt exists.
 def _max_attempts() -> int:
-    raw = os.getenv("VALIDATION_MAX_ATTEMPTS", "1")
+    raw = os.getenv("VALIDATION_MAX_ATTEMPTS", "3")
     try:
         value = int(raw)
     except (TypeError, ValueError):
@@ -399,6 +400,15 @@ class MethodValidator:
             else:
                 outcome = AttemptOutcome.FAILED
 
+            # HTTP status extraction: the executor's evidence carries it for
+            # HTTP methods; pull it out once for the attempt record and for
+            # the signature-capture path below.
+            http_status = None
+            try:
+                http_status = int((exec_result.evidence or {}).get("http_status"))
+            except (TypeError, ValueError):
+                http_status = None
+
             attempt = ValidationAttempt(
                 attempt_number=attempt_num,
                 test_case_name=tc.name,
@@ -408,6 +418,7 @@ class MethodValidator:
                 outcome=outcome,
                 logs=exec_result.logs,
                 raw_response=(exec_result.raw_response or "")[:2000],
+                http_status=http_status,
                 error=exec_result.error,
             )
 
@@ -421,6 +432,80 @@ class MethodValidator:
                     log_excerpt = exec_result.logs.strip()[-800:]
                     print(f"  Logs:\n    {log_excerpt}")
                 print(f"  Decision: {actual} (expected: {tc.expected_decision})")
+
+            # -----------------------------------------------------------------
+            # Confirmed not-found signature capture.
+            #
+            # The structural probe submitted a KNOWN-FAKE value, so the
+            # site's deterministic refusal of it IS the site's canonical
+            # "not found" response — even when it arrives as an HTTP 4xx
+            # (e.g. dgshippingbsid.in answers 400
+            # {"message":"Invalid Input: Application ID not found."}). A
+            # field_match method without a signature for that response
+            # classifies it TECHNICAL_FAILURE, fails its own structural
+            # test, and a mechanically-correct method dies at birth. Capture
+            # the response as a narrow, executor-validated signature
+            # (status + substring), persist it on the method, and retest.
+            # The executor's _matches_not_found_signature re-validates both
+            # fields at execution time, so only genuinely narrow signatures
+            # take effect.
+            # -----------------------------------------------------------------
+            if (
+                outcome != AttemptOutcome.PASSED
+                and attempt_num < MAX_ATTEMPTS_PER_TEST_CASE
+                and http_status is not None
+                and 400 <= http_status < 500
+                and (exec_result.raw_response or "").strip()
+                and (method.expected_responses or {}).get("comparison_mode") == "field_match"
+                # A captcha-rejection body is NEVER a not-found signature:
+                # capturing it would classify a future captcha hiccup as a
+                # confirmed document rejection. The executor redoes the
+                # captcha round in-run; the validator must not enshrine it.
+                and "captcha" not in (exec_result.raw_response or "").lower()
+            ):
+                body_head = exec_result.raw_response.strip()[:200]
+                expected = dict(method.expected_responses or {})
+                signatures = expected.get("not_found_signatures")
+                if not isinstance(signatures, list):
+                    signatures = []
+                    expected["not_found_signatures"] = signatures
+
+                def _sig_norm(text: str) -> str:
+                    # Whitespace-insensitive comparison — the same server has
+                    # been observed emitting '{"message": "..."}' and
+                    # '{"message":"..."}' for different error classes, so
+                    # exact-substring dedup would store drift duplicates.
+                    return "".join(str(text).lower().split())
+
+                already = any(
+                    s.get("status") == http_status
+                    and _sig_norm(s.get("contains", "")) == _sig_norm(body_head)
+                    for s in signatures
+                    if isinstance(s, dict)
+                )
+                if not already:
+                    signatures.append({"status": http_status, "contains": body_head})
+                    method.expected_responses = expected
+                    logger.info(
+                        "Captured confirmed not-found signature for %s: "
+                        "HTTP %s %r — retesting.",
+                        method.method_id, http_status, body_head[:120],
+                    )
+                    if self.registry:
+                        try:
+                            self.registry.update_expected_responses(
+                                method.method_id, expected
+                            )
+                            logger.info(
+                                "Persisted not-found signature to registry for %s",
+                                method.method_id,
+                            )
+                        except Exception as e:
+                            logger.warning(
+                                "Failed to persist signature for %s: %s",
+                                method.method_id, e,
+                            )
+                    continue  # immediate retest with the signature in place
 
             # Try improvement on failure/error (before final attempt).
             # Gap policy: after the first failure run the CHEAP direct LLM
@@ -454,6 +539,8 @@ class MethodValidator:
                                     f"also failed (got {probe_result.decision_status.value}).")
                     if note is None:
                         note = "[LLM Improvement Skipped] Model returned nothing usable."
+                elif os.getenv("DVS_AGENTIC_HEALING", "1") == "0":
+                    note = "[Agentic Improvement Disabled] DVS_AGENTIC_HEALING=0."
                 else:
                     note = _attempt_improvement(
                         method, attempt, tc, self.runner, self.executor_script_path

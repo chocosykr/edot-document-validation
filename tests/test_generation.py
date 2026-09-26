@@ -44,6 +44,13 @@ class TestMethodGeneration(unittest.TestCase):
                 )
 
     def test_generate_from_db_source(self):
+        """Full-LLM path maps the model's proposal onto a valid method.
+
+        The LLM call is mocked: a live model cannot be relied on to produce
+        an executable method for an arbitrary URL (it may emit a BROWSER
+        method for a page with no visible contract — that now raises
+        deterministically; see test_browser_method_rejected).
+        """
         profile = {
             "issuing_country": "India",
             "document_type": "CDC"
@@ -52,15 +59,47 @@ class TestMethodGeneration(unittest.TestCase):
             "country": "India",
             "url": "https://dgma.gov.in/seafarer-certificate-verification-system"
         }
-        
-        method = generate_candidate_method(profile, db_source)
-        
+        with patch(
+            "generation.generator._fetch_page_structure",
+            return_value={"summary": "", "inline_js": "", "workflow_options": []},
+        ), patch(
+            "generation.generator.generate_json",
+            return_value={
+                "method_id": "M_IND_CDC_001",
+                "method_type": "HTTP",
+                "execution_steps": [{
+                    "action": "REQUEST", "method": "GET",
+                    "url": "https://dgma.gov.in/verify",
+                    "params": {"no": "{{document_number}}"},
+                }],
+                "required_inputs": ["document_number"],
+            },
+        ):
+            method = generate_candidate_method(profile, db_source)
+
         self.assertEqual(method.country, "India")
         self.assertEqual(method.document_type, "CDC")
         self.assertEqual(method.source_url, "https://dgma.gov.in/seafarer-certificate-verification-system")
         self.assertEqual(method.status, MethodStatus.TESTING)
-        self.assertTrue(len(method.required_inputs) > 0)
-        self.assertTrue(len(method.execution_steps) > 0)
+        self.assertEqual(method.required_inputs, ["document_number"])
+
+    def test_browser_method_rejected(self):
+        """A BROWSER proposal fails generation loudly (stub executor)."""
+        profile = {"issuing_country": "India", "document_type": "CDC"}
+        db_source = {"country": "India", "url": "https://example.test/checker"}
+        with patch(
+            "generation.generator._fetch_page_structure",
+            return_value={"summary": "", "inline_js": "", "workflow_options": []},
+        ), patch(
+            "generation.generator.generate_json",
+            return_value={
+                "method_type": "BROWSER",
+                "execution_steps": [{"action": "BROWSER", "url": "https://example.test"}],
+                "required_inputs": [],
+            },
+        ):
+            with self.assertRaisesRegex(RuntimeError, "BROWSER"):
+                generate_candidate_method(profile, db_source)
 
     def test_generate_from_discovery_result(self):
         profile = {

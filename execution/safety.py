@@ -42,6 +42,34 @@ STRUCTURAL_TEST_VALUES = frozenset({
     "test_structural_001",
 })
 
+# Structural-probe field values BY FIELD ROLE: the structural test must be
+# able to satisfy every required input of a generated method (a method for a
+# portal that wants CDC number + serial + passport + reply email cannot be
+# probed with a document number alone — the runner refuses it before any
+# request is sent, and the method can never be validated). Each field gets a
+# deterministic known-fake value by matching its NAME against these patterns;
+# the values stay obviously-fake (ZZ/9 digits, .invalid mail) so a structural
+# probe can never be mistaken for a real lookup.
+_STRUCTURAL_FIELD_PATTERNS: list[tuple[str, str]] = [
+    ("passport", "ZZ0000000"),
+    ("cdc", "ZZ9999999"),
+    ("serial", "ZZ8888888"),
+    ("indos", "ZZ7777777"),
+    ("email", "structural.probe@dvs.invalid"),
+    ("phone", "+950000000000"),
+    ("date_of_birth", "01/01/1990"),
+]
+_STRUCTURAL_DEFAULT = "ZZ000111"
+
+
+def structural_test_value_for(field_name: str) -> str:
+    """The known-fake value the structural probe submits for this field."""
+    n = str(field_name or "").lower()
+    for marker, value in _STRUCTURAL_FIELD_PATTERNS:
+        if marker in n:
+            return value
+    return _STRUCTURAL_DEFAULT
+
 # Real-world note: shape heuristics ("does this look like a plausible
 # credential number?") were considered and deliberately left out — a real
 # document number could legitimately look unusual, and a false refusal here
@@ -196,9 +224,13 @@ def guard_inputs(
                 "never be submitted to a live endpoint."
             )
             continue
-        if allow_structural_test_values and v.upper() in {
-            s.upper() for s in STRUCTURAL_TEST_VALUES
-        }:
+        if allow_structural_test_values and (
+            v.upper() in {s.upper() for s in STRUCTURAL_TEST_VALUES}
+            or any(
+                v == structural_test_value_for(k)
+                for k in (inputs or {})
+            )
+        ):
             # Explicitly opted-in structural probe — allowed despite being a
             # known-fake value.
             continue

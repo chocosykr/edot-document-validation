@@ -24,6 +24,7 @@ toggle (utils.llm_client.get_llm_config) — no hardcoded model name.
 
 import json
 import os
+import re
 import time
 from urllib.parse import urljoin, urlparse
 
@@ -507,6 +508,29 @@ def _enqueue(results: list[dict], queue: list[str], seen: set, front: bool = Fal
         queue.extend(urls)
 
 
+def _hint_urls(redacted_profile: dict) -> list[str]:
+    """Verification-portal URLs the document ITSELF carries.
+
+    Extracted scans sometimes name the issuing authority's verification URL
+    (a QR target, a "verify at" footer, a portal link). These are the
+    strongest possible discovery signals — printed on the document by the
+    issuer — and unlike search they need no external API. Used to seed the
+    crawl queue (and as the fallback when search is unavailable).
+    """
+    hints = redacted_profile.get("source_discovery_hints") or []
+    urls: list[str] = []
+    for hint in hints:
+        text = str(hint or "").strip()
+        if text.startswith(("http://", "https://")):
+            urls.append(text)
+            continue
+        # A hint may embed a URL in prose — take the first http(s) substring.
+        m = re.search(r"https?://[^\s,;]+", text)
+        if m:
+            urls.append(m.group(0))
+    return urls
+
+
 def run_discovery(redacted_profile: dict) -> dict:
     """Search, fetch candidates, judge each, and iterate up to the cap.
 
@@ -520,6 +544,27 @@ def run_discovery(redacted_profile: dict) -> dict:
     queue: list[str] = []
     seen: set = set()
     _enqueue(search_results, queue, seen)
+
+    # Search can be entirely unavailable (quota exhausted, API outage). The
+    # document's own hints — URLs printed on the document by the issuer —
+    # then seed the crawl: they are first-party evidence, better than any
+    # search result, and they keep discovery functional without Tavily.
+    hints = _hint_urls(redacted_profile)
+    if hints:
+        total_results = sum(len(r.get("results") or []) for r in search_results)
+        if total_results == 0:
+            print(
+                f"[discovery] search returned nothing "
+                f"({sum(1 for r in search_results if r.get('error'))} error(s) "
+                f"across {len(search_results)} queries) — falling back to the "
+                "document's own source hints."
+            )
+        for url in hints:
+            # NOTE: not added to `seen` here — the crawl loop below marks a
+            # URL as seen when it POPS it; pre-marking made the loop skip
+            # the hint immediately (observed: "exhausted 0 attempt(s)").
+            if url not in seen and not _is_skippable(url):
+                queue.insert(0, url)
 
     visited: list[dict] = []
     attempts = 0
@@ -561,6 +606,18 @@ def run_discovery(redacted_profile: dict) -> dict:
                 "page_type": "login_wall" if "login" in reject_reason else "error",
                 "reasoning": reject_reason,
             })
+            # A deterministic reject (login wall, error page) kills THIS page,
+            # not its links: a portal root behind a login may still link the
+            # public verification page (dmamyanmar.org behaves exactly so).
+            # Same-host links are cheap to try and never leave the source.
+            base_netloc = urlparse(url).netloc
+            for link in (page.get("links") or []) + (page.get("external_links") or []):
+                if (
+                    link not in seen
+                    and not _is_skippable(link)
+                    and urlparse(link).netloc == base_netloc
+                ):
+                    queue.append(link)
             continue
 
         try:

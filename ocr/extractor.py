@@ -93,20 +93,40 @@ def extract_and_redact(ocr_result: dict) -> dict:
         "temperature": 0
     }
 
-    response = requests.post(
-        config["url"],
-        headers=headers,
-        json=payload,
-        timeout=180
+    # Bounded retry loop: the extraction call intermittently returns an
+    # EMPTY body with finish_reason=stop (observed repeatedly for one
+    # document during a folder run — and never host-side for smaller
+    # prompts), which crashes json.loads. The empty-completion is not
+    # deterministic, so re-asking the identical question recovers it; up to
+    # 3 attempts with a short backoff.
+    log = logging.getLogger(__name__)
+    content = None
+    last_error: Exception | None = None
+    for attempt in range(1, 4):
+        response = requests.post(
+            config["url"],
+            headers=headers,
+            json=payload,
+            timeout=180
+        )
+        response.raise_for_status()
+        result = response.json()
+        try:
+            content = result["choices"][0]["message"]["content"]
+            return parse_json_response(content)
+        except (json.JSONDecodeError, TypeError, AttributeError, KeyError) as e:
+            last_error = e
+            finish = (result.get("choices") or [{}])[0].get("finish_reason")
+            log.warning(
+                "Extraction attempt %d/3 returned unusable content "
+                "(finish_reason=%r, len=%r): %s",
+                attempt, finish, len(content or ""), e,
+            )
+            import time as _time
+            _time.sleep(2 * attempt)
+    raise ValueError(
+        f"Extraction LLM returned no parsable content after 3 attempts: {last_error}"
     )
-
-    response.raise_for_status()
-
-    result = response.json()
-
-    content = result["choices"][0]["message"]["content"]
-
-    return parse_json_response(content)
 
 
 def split_credentials(extracted: dict) -> tuple[RedactedProfile, RawLookupCredentials]:
@@ -149,11 +169,23 @@ def split_credentials(extracted: dict) -> tuple[RedactedProfile, RawLookupCreden
 
 def parse_json_response(content: str) -> dict:
 
-    content = content.strip()
+    content = (content or "").strip()
 
     if content.startswith("```"):
         content = content.replace("```json", "")
         content = content.replace("```", "")
         content = content.strip()
 
-    return json.loads(content)
+    try:
+        return json.loads(content)
+    except json.JSONDecodeError:
+        pass
+
+    # The model sometimes annotates the JSON ("Here is the extracted
+    # document ..." before it, commentary after it) — fall back to
+    # brace-counting extraction of the first {...} block.
+    from utils.llm_client import _extract_json
+    parsed = _extract_json(content)
+    if isinstance(parsed, dict):
+        return parsed
+    raise json.JSONDecodeError("no JSON object found in content", content or "", 0)

@@ -154,17 +154,33 @@ def run_folder_mode(folder_path: str):
 
     results = {}
     for doc in documents:
-        # The subject fixture + a provider that can read sibling documents
-        # of the same person. required_inputs are discovered per method at
-        # execution time; the provider asks the engine for them each call.
-        subject_fixture, provider = load_subject_document(doc, person)
+        name = os.path.basename(doc)
+        # One unextractable document must not abort the folder: report it
+        # honestly in the summary and continue with the rest.
+        try:
+            subject_fixture, provider = load_subject_document(doc, person)
+        except Exception as e:
+            print(f"\n[!] Could not extract {name}: {e}")
+            results[name] = {
+                "decision_status": "VALIDATION_UNAVAILABLE",
+                "failure_reason": f"Document extraction failed: {e}",
+            }
+            continue
 
-        decision, decision_dict, _ = validate_one_document(
-            doc,
-            credential_provider=provider,
-            label=os.path.basename(doc),
-        )
-        results[os.path.basename(doc)] = decision_dict
+        try:
+            decision, decision_dict, _ = validate_one_document(
+                doc,
+                credential_provider=provider,
+                label=name,
+            )
+        except Exception as e:
+            print(f"\n[!] Validation crashed for {name}: {e}")
+            results[name] = {
+                "decision_status": "TECHNICAL_FAILURE",
+                "failure_reason": f"Pipeline error: {e}",
+            }
+            continue
+        results[name] = decision_dict
 
     print(f"\n{'=' * 60}\nFOLDER SUMMARY — {person}\n{'=' * 60}")
     for name, d in results.items():

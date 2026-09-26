@@ -35,6 +35,7 @@ class ValidationAttempt(BaseModel):
     outcome: AttemptOutcome
     logs: str = ""
     raw_response: str = ""   # executor's response body (bounded) — separate from Docker infra logs
+    http_status: Optional[int] = None   # executor's HTTP status, when the method made an HTTP request
     error: Optional[str] = None
     improvement_applied: Optional[str] = None
 

@@ -105,6 +105,40 @@ With a CAPTCHA (fetch the image, solve it, then include the solved value):
   Put them in the verify request's "params" exactly as the JavaScript evidence
   names them (e.g. "captcha" and "captchaId").
 
+ASP.NET ANTI-FORGERY FORMS (session token required):
+If the page evidence shows a hidden input named `__RequestVerificationToken`
+(or similar anti-forgery token), the POST is only accepted when the SAME
+session carries the token. Model it with the two-session-aware steps:
+[
+  {"action": "GET_HTML", "url": "https://.../FormPage", "output_var": "page_html"},
+  {"action": "EXTRACT_FROM_HTML", "html": "{{page_html}}",
+   "selector": "input[name='__RequestVerificationToken']", "output_var": "__RequestVerificationToken"},
+  {"action": "REQUEST", "method": "POST", "url": "https://.../Verify",
+   "params": {"__RequestVerificationToken": "{{__RequestVerificationToken}}",
+              ...real form fields...}}
+]
+- GET_HTML: fetches a page into a template variable; "output_var" names it
+  (default "page_html"). Cookies from this fetch are reused by later steps.
+- EXTRACT_FROM_HTML: pulls a value out of a fetched page variable.
+  - "html": the variable name from GET_HTML (e.g. "{{page_html}}").
+  - "selector": ONLY the supported shape `input[name='<field name>']`.
+  - "output_var": the variable that holds the extracted value; reference it
+    later as {{output_var}}. The variable name MAY equal the form field name
+    (e.g. "__RequestVerificationToken"), which lets you write
+    {{__RequestVerificationToken}} directly in the POST params.
+
+CONTACT-ONLY INPUTS (fields the site never checks against a record):
+Some required form fields only tell the site WHERE to send the result — a
+notification email ("Requester's Email", "ReplyEmail"), a callback phone.
+Such a field can never be extracted from a document. Declare it:
+  "contact_only_inputs": ["email"]
+inside expected_responses (use the input NAME you used in required_inputs).
+The execution layer synthesizes a plausible-format inert value (e.g. an
+address under the reserved .invalid TLD) and the missing-field refusal does
+not apply. IDENTITY fields (document numbers, serials, passport numbers,
+names, birth dates) are checked against records: NEVER declare one
+contact_only. When unsure, treat the field as IDENTITY.
+
 CRITICAL RULES FOR expected_responses:
 - "success_keywords" must be a JSON array of lowercase strings that appear in the response when the document IS valid (e.g. ["valid", "verified", "certificate found", "active"]).
 - "failure_keywords" must be a JSON array of lowercase strings that appear in the response when the document is NOT valid (e.g. ["invalid", "not found", "no record", "expired"]).
@@ -125,3 +159,17 @@ shows that specific response, you may declare it:
 - If you have not seen such a specific message, omit the key entirely.
 
 Ensure that sensitive fields like "document_number" and "date_of_birth" are required_inputs and mapped to execution_steps properly (e.g. `{{document_number}}`).
+
+STRUCTURAL TEST (how your method will be verified before promotion):
+The system submits ONE probe with deterministic known-fake values: every
+required input gets an obviously-fake value by field role — document_number
+→ TEST_STRUCTURAL_001, date_of_birth → 01/01/1990, passport → ZZ0000000,
+cdc → ZZ9999999, serial → ZZ8888888, indos → ZZ7777777, email →
+structural.probe@dvs.invalid. The probe MUST be deterministically refused
+by the target (a "not found" response), and the method is promoted only
+when it classifies that refusal as REJECTED. So: required_inputs must
+include EVERY field whose absence would change the response (otherwise the
+probe gets an unclassifiable error page and the method fails validation),
+and must NOT include fields the site ignores (extra required inputs make
+the probe refuse before submission). Map every {{placeholder}} in
+execution_steps to a required input or a runtime value documented above.

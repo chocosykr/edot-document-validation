@@ -8,6 +8,11 @@ from registry.repository import MethodRegistry
 from validation.models import TestCase, ValidationReportStatus, AttemptOutcome
 from validation.validator import MethodValidator, MAX_ATTEMPTS_PER_TEST_CASE
 
+# Keep the expensive agentic self-healing escalation (real LLM + tool loop)
+# out of unit tests; the direct LLM rewrite pass is mocked per-test instead.
+OS_ENV = patch.dict(os.environ, {"DVS_AGENTIC_HEALING": "0"})
+OS_ENV.start()
+
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -151,9 +156,16 @@ class TestMethodValidator(unittest.TestCase):
             if os.path.exists(db_path):
                 os.remove(db_path)
 
-    # -- improvement note is recorded ------------------------------------
+    # -- improvement ladder runs on failure ------------------------------
 
     def test_improvement_note_recorded_on_failure(self):
+        """A failing non-signature attempt runs the healing ladder.
+
+        Attempt 1 → cheap direct LLM rewrite (test-before-adopt: with a
+        runner that always returns REJECTED, the rewrite's probe also fails,
+        so the rewrite is NOT adopted). Attempt 2 → the agentic escalation
+        (disabled via DVS_AGENTIC_HEALING=0 in tests).
+        """
         method = _make_method()
         runner = _mock_runner("REJECTED")
         validator = MethodValidator(runner=runner, executor_script_path="tests/dummy_executor.py")
@@ -165,10 +177,71 @@ class TestMethodValidator(unittest.TestCase):
         with patch("utils.llm_client.generate_json", return_value={"execution_steps": [{"action": "mock_improved"}]}):
             report = validator.validate(method, test_cases)
 
-        # All but last attempt should have an improvement note
-        for attempt in report.attempts[:-1]:
+        self.assertEqual(report.status, ValidationReportStatus.FAILED)
+        self.assertLessEqual(len(report.attempts), MAX_ATTEMPTS_PER_TEST_CASE)
+        # Attempt 1: the direct rewrite ran but its probe failed the same way.
+        self.assertIsNotNone(report.attempts[0].improvement_applied)
+        self.assertIn("[LLM Improvement Rejected]", report.attempts[0].improvement_applied)
+        # Any later attempt records its (disabled-in-tests) escalation note.
+        for attempt in report.attempts[1:-1]:
             self.assertIsNotNone(attempt.improvement_applied)
-            self.assertIn("[LLM Improvement Applied]", attempt.improvement_applied)
+
+    # -- not-found signature capture --------------------------------------
+
+    def test_not_found_signature_captured_and_retest_passes(self):
+        """A 4xx-with-body refusal of the known-fake probe becomes a confirmed
+        not-found signature; the method is retested and passes without any
+        LLM involvement.
+        """
+        method = _make_method()
+        method.expected_responses = {"comparison_mode": "field_match"}
+        method.execution_steps = [{"action": "GET", "url": "https://x.example/verify"}]
+
+        runner = MagicMock()
+
+        def executor_simulation(request, *args, **kwargs):
+            """Mimic the real executor: without a matching declared signature
+            the site's 400 refusal is TECHNICAL_FAILURE; once the method
+            carries the captured signature it classifies REJECTED."""
+            raw = '{"message":"Invalid Input: Application ID not found."}'
+            sigs = (request.method.expected_responses or {}).get("not_found_signatures") or []
+            if any(
+                s.get("status") == 400 and "application id not found" in str(s.get("contains", "")).lower()
+                for s in sigs if isinstance(s, dict)
+            ):
+                return ExecutionResult(
+                    decision_status=ExecutionDecisionStatus.REJECTED,
+                    evidence={"http_status": 400, "not_found_signature": True},
+                    raw_response=raw,
+                )
+            return ExecutionResult(
+                decision_status=ExecutionDecisionStatus.TECHNICAL_FAILURE,
+                evidence={"http_status": 400},
+                raw_response=raw,
+            )
+
+        runner.execute_method.side_effect = executor_simulation
+        validator = MethodValidator(
+            runner=runner,
+            registry=MethodRegistry(db_path="test_validator_sig.db"),
+            executor_script_path="tests/dummy_executor.py",
+        )
+        # The real compare_response classifies: TECHNICAL_FAILURE passes
+        # through untouched; the retest's response has no near-match for the
+        # fake input, so the executor's REJECTED survives comparison.
+        report = validator.validate(
+            method,
+            [TestCase(name="structural_check", inputs={"document_number": "TEST_STRUCTURAL_001"}, expected_decision="REJECTED", is_required=True)],
+        )
+        self.assertEqual(report.status, ValidationReportStatus.PASSED)
+        # The capture attempt `continue`s unrecorded; the only recorded
+        # attempt is the retest, which passed via the captured signature.
+        self.assertEqual(len(report.attempts), 1)
+        self.assertEqual(report.attempts[0].outcome, AttemptOutcome.PASSED)
+        sigs = method.expected_responses["not_found_signatures"]
+        self.assertEqual(len(sigs), 1)
+        self.assertEqual(sigs[0]["status"], 400)
+        self.assertIn("Application ID not found", sigs[0]["contains"])
 
 
 if __name__ == "__main__":
