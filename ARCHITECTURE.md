@@ -816,3 +816,157 @@ run.
    - Fuzzy thresholds (90 / 55 in `field_comparison.py`) were tuned against
      one document's noise profile; watch the local-LLM escalation rate as
      real traffic grows.
+
+---
+
+## 7. Implementation report — the self-generating method agent (September 2026)
+
+This section records what was actually implemented and verified across the
+last working sessions (commits `1b1806a` → `6bc4197`). Every item lists the
+file(s) changed and the evidence it rests on. All LLM calls run on the single
+configured endpoint with `LLM_MODEL=AI_Local` and
+`USE_LOCAL_LLM_ONLY=true` — no frontier model, no fallback chain (§5c4);
+this constraint was held throughout.
+
+### 7.1 Registry routing fixed (a method that existed but was never found)
+
+- **`registry/repository.py::find_methods`** now matches on the CANONICAL
+  document-type key (`expected_responses.document_type_key`), with country-
+  scoped variants (MM_COC…) and an exact-text fallback. Before: SQL `LIKE`
+  substring matching on raw text, which broke on punctuation — the ACTIVE
+  INDOS method (`…(INDOS) CERTIFICATE`) was invisible to a profile saying
+  `"INDos Certificate"`, so the pipeline re-generated a candidate that failed
+  its structural test and reported a valid document as `UNKNOWN`.
+- **`registry/document_types.py::document_type_key`** resolves
+  parenthesized extraction wording (`"Continuous Discharge Certificate
+  (CDC)"` → `IN_CDC`) by trying each parenthesis section.
+- **`registry/repository.py::update_expected_responses`** — a granular
+  persistence path for observations (field mappings, not-found signatures).
+  The old path (`register_method`) wrote the whole row back, silently
+  demoting an ACTIVE method to TESTING.
+
+### 7.2 Executor resilience against environmental noise
+
+`executors/http_executor.py`:
+
+- **Transient-error retries** around every request helper (DNS blips,
+  `No route to host`, connection resets, 5xx) with jittered backoff. One
+  real run lost a correct method to a DNS failure host-side AND a routing
+  failure in-container, minutes before both endpoints answered HTTP 200.
+- **In-run captcha redo**: a captcha-rejection response (the site refusing
+  the solve — environment noise, not a method defect) triggers a bounded
+  fetch→solve→request retry loop inside the same execution, mirroring what
+  the target SPA itself does. Measured: dgshippingbsid.in accepts the same
+  flow 6/6 host-side, so a rejection is a per-attempt event; captchas are
+  single-use (resubmitting a solved one returns "expired").
+- Captcha-rejection bodies are explicitly excluded from ever matching a
+  not-found signature.
+
+### 7.3 Structural-test healing (deterministic first, LLM second)
+
+`validation/validator.py`:
+
+- **Confirmed not-found signature capture**: the structural probe submits a
+  known-fake value, so the site's deterministic refusal of it IS the site's
+  canonical "not found" response — even as HTTP 4xx (dgshippingbsid.in
+  answers `400 {"message":"Invalid Input: Application ID not found."}`).
+  The validator captures that response as a narrow, executor-validated
+  signature (`status` + `contains`), persists it, and retests. A previously
+  doomed-but-correct method now passes without any LLM involvement.
+- **Whitespace-insensitive matching** (executor + dedup): the same endpoint
+  was observed emitting `{"message": "…"}` and `{"message":"…"}` for
+  different error classes; exact-substring matching silently failed.
+- **Per-method fake inputs** (`execution/safety.py::
+  structural_test_value_for`): every required input gets a deterministic
+  known-fake value by field role (passport → ZZ0000000, email → …@dvs.invalid,
+  …), so multi-input methods (the DMA portal needs serial + CDC + passport
+  + reply email) can actually be probed instead of being refused before any
+  request.
+- **Attempt budget** raised 1 → 3 (`VALIDATION_MAX_ATTEMPTS`); at 1 every
+  healing path was dead code. The ladder: signature capture/retest → cheap
+  direct LLM rewrite (adopted ONLY if the rewrite passes its own probe) →
+  agentic tool-use loop, gated behind `DVS_AGENTIC_HEALING=1` (default on,
+  disabled in tests).
+
+### 7.4 Generator: code enforces what the LLM only proposes
+
+`generation/generator.py` (post-generation enforcement, deterministic):
+
+- **BROWSER methods rejected outright** — the browser executor is a stub;
+  the model had begun emitting BROWSER as an escape hatch.
+- **Canonical input-name normalization**: models name required inputs after
+  the site's wire fields (`CrewCDCNo`, `CrewPassport`, `Serial`,
+  `ReplyEmail`); inputs (never wire params) are renamed to canonical
+  document keys (`cdc_number`, `passport_number`, `document_number`) so the
+  credential provider and person-folder cross-document lookup can supply
+  them.
+- **Contact-only inference**: email/phone inputs are auto-declared in
+  `expected_responses.contact_only_inputs` (inert `.invalid` synthesis).
+- **Metadata injection**: `source_url`/`country`/`document_type` come from
+  the confirmed source and classified profile, not the model's echo.
+- **Placeholder resolution check**: every `{{…}}` must resolve to a required
+  input, a documented runtime value, or a step output var; unknowns are
+  promoted to required inputs (honest refusal at execution beats literal
+  `{{name}}` junk reaching a live endpoint).
+- **Null-mapping fallback**: the narrow path's well-known-name fallback now
+  runs per-param on the params the model left unmapped (`txtNo`/`dob` were
+  silently dropped when the model mapped another param and punted the rest).
+- **Evidence-pinned workflow params**: `searchType`-style params are pinned
+  to a page `<select>` option by whole-word match against the canonical
+  document-type token. Loose substring matching pinned `DC` for a CDC
+  document (substring of `(CDC)`) — caught live and fixed. Punting values
+  (`{{document_type_key}}`) are dropped rather than pinned literally.
+- `prompts/method_generation.txt` now documents the real step vocabulary
+  (GET_HTML/EXTRACT_FROM_HTML anti-forgery flows, contact_only_inputs) and
+  the structural-test contract so generation aligns with how promotion is
+  decided.
+
+### 7.5 Discovery that works without a search API
+
+`discovery/agent.py`, `db/lookup.py`, `engine/validation_engine.py`:
+
+- **Document-hint fallback**: when search fails entirely (Tavily quota:
+  "This request exceeds your plan's set usage limit" — hit during testing),
+  the crawl is seeded from `source_discovery_hints` — URLs printed on the
+  document by the issuer. (A pre-marking bug made the loop skip the seeded
+  hint: "exhausted 0 attempt(s)" — fixed.)
+- **Same-host link harvest on deterministic rejects**: a portal root behind
+  a login wall still links the public verification page
+  (`dmamyanmar.org` → `/AllInOneCertificate/SelfVerification`, accepted at
+  confidence 100 purely by crawling).
+- **Cumulative routing knowledge** (`remember_source`): once discovery →
+  generation → structural validation succeed, the source is tagged with the
+  document-type key in `verification_sources.db`. The India source now
+  carries `IN_CDC, IN_INDOS`; future documents skip discovery entirely.
+- **Source reuse for sibling document types**: when no doc-type-tagged
+  source exists, same-country sources are offered to the generator; the
+  page-evidence gate (workflow option / API-path token, generalized to
+  SID/CDC/COC) decides compatibility deterministically and fails honestly
+  when the page does not name the type.
+
+### 7.6 Pipeline robustness
+
+- **`main.py --folder`**: one unextractable document is reported and
+  skipped instead of aborting the folder (a 7-document run died mid-way on
+  an empty LLM completion before this).
+- **`ocr/extractor.py`**: extraction retries (3 attempts) on empty/unusable
+  completions and falls back to brace-counting JSON extraction when the
+  model annotates its output.
+- **`.gitignore`**: repaired (a missing newline had glued two entries);
+  `test_*.db` artifacts and OCR cache are ignored.
+
+### 7.7 Verified outcomes on the four test PDFs
+
+| Document | Outcome | Path taken |
+|---|---|---|
+| `INDOS (20).pdf` | **VERIFIED / VALID / HIGH** | Registry routing fix → existing ACTIVE method used (no regeneration) |
+| `SID Anup-1.pdf` | **VERIFIED / VALID / HIGH** | Fully self-generated method: SPA bundle extraction → captcha steps → signature capture from the site's 400 refusal → promotion → LLM-discovered response mapping |
+| `2O - HEIN HTET (AIO).pdf` | **VERIFIED / VALID / HIGH** | Fully autonomous chain: hint fallback (search quota exhausted) → link harvest → method generation (anti-forgery steps, normalized inputs, contact-only email) → cross-document passport lookup → live verification ("HEIN HTET, Passport: MK670211, Status: VALID") |
+| `ANUP CDC ALL PAGES.pdf` | **Method self-generated and live-confirmed**; document run honestly refuses | Same-country source reuse → evidence-pinned `searchType=CDC` → structural test passed → ACTIVE. Engine pass with real credentials: VERIFIED / HIGH (scores 94.7 / 100 / 100). The booklet's own identity pages are SKIPPED by the OCR service (pages 3,6–12 extracted; page 1/2 with CDC number absent), so the single-document run correctly refused rather than fabricate inputs — an extraction gap, not a method gap |
+
+Also verified in passing: the Myanmar COC and Myanmar SID methods were
+independently self-generated and promoted to ACTIVE during folder runs
+(later deleted from the registry to re-prove regeneration through the
+final code paths — the AIO run above is the evidence).
+
+Test suite: 206 tests, all passing, at every commit in this series.
