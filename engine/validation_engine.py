@@ -178,6 +178,24 @@ class ValidationEngine:
         logger.info("No active method found. Checking confirmed source database.")
         db_sources = lookup_source(redacted_profile)
 
+        if not db_sources:
+            # Source reuse: an authority that verifies one document type
+            # (esamudra -> IN_INDOS) often verifies sibling types from the
+            # SAME portal — the page's own search-type selector lists them.
+            # Hand the same-country source to the generator; the narrow
+            # path's doc-type evidence gate (page option / API path) decides
+            # compatibility deterministically, and generation fails honestly
+            # when the page does not name this document type.
+            from db.lookup import lookup_country_sources
+            same_country = lookup_country_sources(redacted_profile)
+            if same_country:
+                logger.info(
+                    "No doc-type-tagged source, but %d same-country source(s) "
+                    "exist — attempting source reuse via page evidence.",
+                    len(same_country),
+                )
+                db_sources = same_country
+
         if db_sources:
             logger.info(
                 "Found %d source(s) in DB. Generating candidate method.",

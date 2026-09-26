@@ -9,6 +9,22 @@ def dict_factory(cursor: sqlite3.Cursor, row: tuple) -> dict:
 
 def lookup_source(redacted_profile: dict) -> list[dict]:
     """Return sources matching exact normalized country and document compatibility."""
+    return _lookup(redacted_profile, require_doc_match=True)
+
+
+def lookup_country_sources(redacted_profile: dict) -> list[dict]:
+    """Same-country sources regardless of document-type compatibility.
+
+    Used for source REUSE: an authority that verifies one document type
+    (esamudra: INDOS) often verifies sibling types on the same portal (the
+    same page's search-type selector lists CDC/DC/COP/...). The caller must
+    confirm document-type compatibility from the SOURCE PAGE's own evidence
+    before generating — a same-country match alone proves nothing.
+    """
+    return _lookup(redacted_profile, require_doc_match=False)
+
+
+def _lookup(redacted_profile: dict, require_doc_match: bool = True) -> list[dict]:
     if not os.path.exists(DB_PATH):
         print(f"Warning: Database not found at {DB_PATH}")
         return []
@@ -43,6 +59,9 @@ def lookup_source(redacted_profile: dict) -> list[dict]:
     results = []
     for row in rows:
         if country_key(row.get("country", "")) != country_code:
+            continue
+        if not require_doc_match:
+            results.append(row)
             continue
         supported = {
             item.strip()

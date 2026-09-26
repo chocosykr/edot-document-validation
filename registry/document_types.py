@@ -48,8 +48,22 @@ COUNTRY_SCOPED_SUFFIXES = {
 
 
 def document_type_key(value: str) -> str | None:
-    normalized = re.sub(r"[^A-Z0-9]+", " ", str(value or "").upper()).strip()
-    return DOCUMENT_TYPE_ALIASES.get(normalized)
+    text = str(value or "")
+    normalized = re.sub(r"[^A-Z0-9]+", " ", text.upper()).strip()
+    key = DOCUMENT_TYPE_ALIASES.get(normalized)
+    if key:
+        return key
+    # "Continuous Discharge Certificate (CDC)" normalizes to a string the
+    # alias table does not carry (only the bare forms are listed). Try each
+    # parenthesis-delimited section on its own — extraction output routinely
+    # uses the "Full Name (ACRONYM)" pattern.
+    for part in re.split(r"[()]", text):
+        candidate = re.sub(r"[^A-Z0-9]+", " ", part.upper()).strip()
+        if candidate:
+            key = DOCUMENT_TYPE_ALIASES.get(candidate)
+            if key:
+                return key
+    return None
 
 
 def profile_document_type_key(profile: dict) -> str | None:

@@ -619,6 +619,15 @@ def _resolve_param_mapping(
     share the same mapping.
     """
     param_mapping = (llm_mapping or {}).get("param_mapping") or {}
+    # Null-valued entries are the model saying "I don't know" — drop them
+    # so the well-known-name fallback below can cover those params.
+    # (Observed live: txtNo/dob answered null and were silently dropped
+    # from the generated request, leaving a lookup with no document
+    # number.)
+    param_mapping = {
+        k: v for k, v in param_mapping.items()
+        if isinstance(v, str) and v.strip()
+    }
     required_inputs = list((llm_mapping or {}).get("required_inputs") or [])
 
     aliases = {
@@ -641,20 +650,32 @@ def _resolve_param_mapping(
         cleaned_required.append(aliases.get(f_clean, f_clean))
     required_inputs = cleaned_required
 
-    if not param_mapping:
-        well_known = {
-            "document_number": ["txtNo", "docno", "doc_no", "docnumber", "number", "cert", "certno"],
-            "date_of_birth": ["dob", "dateofbirth", "birth", "birthdate", "dobdate"],
-        }
-        param_mapping = {}
-        for param in xhr_contract["dynamic_params"]:
-            p_lower = param.lower()
-            for field, aliases in well_known.items():
-                if any(alias in p_lower for alias in aliases):
-                    param_mapping[param] = f"{{{{{field}}}}}"
-                    if field not in required_inputs:
-                        required_inputs.append(field)
-                    break
+    # Well-known-name fallback runs PER PARAM: it fills only the params the
+    # model left unmapped, never overrides an explicit mapping, and —
+    # crucially — also runs when SOME params were mapped (the previous
+    # all-or-nothing condition let a model that mapped one param and punted
+    # the rest silently drop the rest).
+    well_known = {
+        "document_number": ["txtno", "txt_no", "docno", "doc_no", "docnumber", "doc_number", "number", "certno", "cert_no"],
+        "date_of_birth": ["dob", "dateofbirth", "date_of_birth", "birth", "birthdate", "dobdate"],
+    }
+    for param in xhr_contract.get("dynamic_params", []):
+        if param in param_mapping:
+            continue
+        p_lower = param.lower()
+        for field, aliases in well_known.items():
+            if any(alias in p_lower for alias in aliases):
+                param_mapping[param] = f"{{{{{field}}}}}"
+                if field not in required_inputs:
+                    required_inputs.append(field)
+                break
+
+    # Filter inputs the model hallucinated from workflow params (a pinned
+    # search-type selector is never a document-sourced input).
+    required_inputs = [
+        f for f in required_inputs
+        if f not in ("document_type", "document_type_key")
+    ]
 
     return param_mapping, required_inputs
 
@@ -666,6 +687,14 @@ def _infer_workflow_params(
 ) -> Dict[str, str]:
     """Resolve selector params from the model output and page options."""
     workflow_params = dict((llm_mapping or {}).get("workflow_params") or {})
+    # A workflow param value must be a CONCRETE page-option value. A
+    # placeholder ({{document_type_key}}) is the model punting — drop it so
+    # the page-evidence pinning below decides. (Observed live: the literal
+    # placeholder got pinned as a static param and the request went out as
+    # searchType=IN_CDC, which the endpoint answers with an empty body.)
+    for _k, _v in list(workflow_params.items()):
+        if not isinstance(_v, str) or not _v.strip() or _v.strip().startswith("{{"):
+            workflow_params.pop(_k)
     document_type = str(redacted_profile.get("document_type") or "").lower()
     param_mapping = (llm_mapping or {}).get("param_mapping") or {}
 
@@ -679,14 +708,38 @@ def _infer_workflow_params(
             mapped = document_type_key(redacted_profile.get("document_type", ""))
         else:
             mapped = document_type_key(redacted_profile.get("document_type", ""))
+        # Tokens naming THIS document type, from the canonical alias table
+        # ("Continuous Discharge Certificate (CDC)" -> IN_CDC -> "CDC"),
+        # plus the profile's own first word. An option matches when its
+        # VALUE or TEXT names a token as a whole word — word-boundary
+        # matching so a short token ("PP") cannot ride inside an unrelated
+        # word ("shipping").
+        _doc_key = document_type_key(redacted_profile.get("document_type", ""))
+        doc_token = (
+            _doc_key.split("_", 1)[1] if _doc_key and "_" in _doc_key else ""
+        )
+        first_word = (
+            re.sub(r"[^A-Za-z]+", " ", document_type).split()[0]
+            if document_type
+            else ""
+        )
+        tokens = {t.lower() for t in (doc_token, first_word) if t}
+
+        def _names_token(haystack: str) -> bool:
+            return any(
+                re.search(rf"\b{re.escape(t)}\b", haystack.lower())
+                for t in tokens
+            )
+
         for option in xhr_contract.get("workflow_options", []):
             value = str(option.get("value") or "")
             text = str(option.get("text") or "")
-            if value and (
-                value.lower() in document_type
-                or text.lower() in document_type
-                or (mapped == "IN_INDOS" and value.lower() == "indos")
-            ):
+            # Word-boundary matching ONLY. Loose substring checks are
+            # wrong here: option value "DC" substring-matched the "(CDC)"
+            # inside "Continuous Discharge Certificate (CDC)" and pinned
+            # the wrong search type (live-confirmed bug). A token must be a
+            # standalone word in the option's value/text.
+            if value and _names_token(f"{value} {text}"):
                 workflow_params[param] = value
                 break
     return workflow_params
@@ -1159,12 +1212,20 @@ def generate_candidate_method(
         # ------------------------------------------------------------
         xhr_contract["workflow_options"] = page_structure.get("workflow_options", []) if page_structure else []
         document_key = profile_document_type_key(redacted_profile)
-        if document_key == "IN_SID" and not _doc_type_workflow_evidence(
-            document_key, xhr_contract["workflow_options"], xhr_contract.get("endpoint") or ""
+        # Country-scoped document types (SID/CDC/COC) must have their type
+        # named by the SOURCE PAGE itself — a workflow option, an API path
+        # token, or a pinned workflow param. Without this gate a reused
+        # same-country source could produce a method whose search-type param
+        # is left floating (never pinned to this document's type).
+        _doc_token = document_key.split("_", 1)[1] if document_key and "_" in document_key else ""
+        if _doc_token in ("SID", "CDC", "COC") and not (
+            _doc_type_workflow_evidence(
+                document_key, xhr_contract["workflow_options"], xhr_contract.get("endpoint") or ""
+            )
         ):
             raise RuntimeError(
-                "Source page has no workflow option or API-path evidence "
-                "compatible with document type IN_SID."
+                f"Source page has no workflow option or API-path evidence "
+                f"compatible with document type {document_key}."
             )
         user_prompt, _ = _build_narrow_mapping_payload(redacted_profile, xhr_contract, available_inputs=available_inputs)
 
