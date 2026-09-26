@@ -15,4 +15,6 @@ discovery_report_*.md
 .ocr_cache/
 *.db.bak-*
 .ocr_cache/
-*.db.bak-*
+*.db.bak-*test_validator_sig.db
+test_engine_*.db
+test_validator_registry.db
