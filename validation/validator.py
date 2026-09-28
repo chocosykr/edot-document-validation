@@ -145,8 +145,11 @@ def _attempt_improvement(
         if (test_m.expected_responses or {}).get("comparison_mode") == "field_match":
             from validation.field_comparison import compare_response
             field_mapping = (test_m.expected_responses or {}).get("field_mapping")
-            exec_result = compare_response(exec_result, tc.inputs, field_mapping=field_mapping)
-            
+            exec_result = compare_response(
+                exec_result, tc.inputs, field_mapping=field_mapping,
+                not_found_signatures=(test_m.expected_responses or {}).get("not_found_signatures"),
+            )
+
         actual = exec_result.decision_status.value
         passed = actual == tc.expected_decision
         
@@ -389,7 +392,10 @@ class MethodValidator:
 
             if (method.expected_responses or {}).get("comparison_mode") == "field_match":
                 field_mapping = (method.expected_responses or {}).get("field_mapping")
-                exec_result = compare_response(exec_result, tc.inputs, field_mapping=field_mapping)
+                exec_result = compare_response(
+                    exec_result, tc.inputs, field_mapping=field_mapping,
+                    not_found_signatures=(method.expected_responses or {}).get("not_found_signatures"),
+                )
 
             actual = exec_result.decision_status.value
 
@@ -526,7 +532,8 @@ class MethodValidator:
                         if (improved.expected_responses or {}).get("comparison_mode") == "field_match":
                             field_mapping = (improved.expected_responses or {}).get("field_mapping")
                             probe_result = compare_response(
-                                probe_result, tc.inputs, field_mapping=field_mapping
+                                probe_result, tc.inputs, field_mapping=field_mapping,
+                                not_found_signatures=(improved.expected_responses or {}).get("not_found_signatures"),
                             )
                         if probe_result.decision_status.value == tc.expected_decision:
                             method.execution_steps = improved.execution_steps

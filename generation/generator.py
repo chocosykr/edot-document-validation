@@ -655,9 +655,18 @@ def _resolve_param_mapping(
     # crucially — also runs when SOME params were mapped (the previous
     # all-or-nothing condition let a model that mapped one param and punted
     # the rest silently drop the rest).
+    # Vocabulary is generic seafarer-credential language (cdc/serial/passport
+    # are document types, not portal names), matched as case-insensitive
+    # substrings of the wire param name. Live case: dmamyanmar's form posts
+    # CrewCDCNo (the holder's CDC book number) and Serial (the certificate's
+    # serial) — the fallback now maps them to cdc_number/serial_number from
+    # the param names alone; no portal-specific code.
     well_known = {
-        "document_number": ["txtno", "txt_no", "docno", "doc_no", "docnumber", "doc_number", "number", "certno", "cert_no"],
+        "document_number": ["txtno", "txt_no", "docno", "doc_no", "docnumber", "doc_number", "number", "certno", "cert_no", "applicationno", "application_no", "appid", "app_id", "regno", "reg_no"],
         "date_of_birth": ["dob", "dateofbirth", "date_of_birth", "birth", "birthdate", "dobdate"],
+        "cdc_number": ["cdcno", "cdc_no", "cdc", "sirb"],
+        "serial_number": ["serial"],
+        "passport_number": ["passport", "ppno", "pp_no"],
     }
     for param in xhr_contract.get("dynamic_params", []):
         if param in param_mapping:
@@ -700,7 +709,7 @@ def _infer_workflow_params(
 
     for param in list(xhr_contract.get("dynamic_params", [])):
         mapped = str(param_mapping.get(param) or "").lower()
-        if param in workflow_params or "search" not in param.lower():
+        if param in workflow_params or _is_dispatch_selector(param, xhr_contract.get("workflow_options") or []):
             continue
         # A PUNTED mapping (null) must not skip pinning: the page's own
         # <select> is the evidence, not the model's guess. (Live case,
@@ -738,7 +747,14 @@ def _infer_workflow_params(
                 for t in tokens
             )
 
-        for option in xhr_contract.get("workflow_options", []):
+        # Only options from THE param's own <select> are eligible evidence:
+        # a page can carry several selects (document type, port, year, …) and
+        # an option from an unrelated one must never be pinned.
+        own_options = [
+            o for o in xhr_contract.get("workflow_options", [])
+            if _is_dispatch_selector(param, [o])
+        ] or xhr_contract.get("workflow_options", [])
+        for option in own_options:
             value = str(option.get("value") or "")
             text = str(option.get("text") or "")
             # Word-boundary matching ONLY. Loose substring checks are
@@ -750,6 +766,34 @@ def _infer_workflow_params(
                 workflow_params[param] = value
                 break
     return workflow_params
+
+
+def _is_dispatch_selector(param: str, workflow_options: list) -> bool:
+    """True when ``param`` corresponds to a <select> on the source page.
+
+    Purely structural: the param and the page's select share a vocabulary
+    word (case-insensitive alpha token). "searchType" (servlet param) and
+    "cmbSearch_by" (the page's select) share "search"; "CrewCDCNo" shares
+    nothing with a select named "cmbSearch_by". The prefix tokens below are
+    universal HTML naming conventions (cmb/ddl/drp = combo-box/dropdown
+    widgets), not portal-specific knowledge.
+    """
+    _WIDGET_PREFIXES = {"cmb", "ddl", "drp", "select", "list"}
+    p_tokens = {
+        t for t in re.split(r"[^a-z]+", str(param or "").lower())
+        if len(t) >= 4 and t not in _WIDGET_PREFIXES
+    }
+    if not p_tokens:
+        return False
+    for option in workflow_options or []:
+        select_name = str(option.get("select") or "").lower()
+        s_tokens = {
+            t for t in re.split(r"[^a-z]+", select_name)
+            if len(t) >= 4 and t not in _WIDGET_PREFIXES
+        }
+        if p_tokens & s_tokens:
+            return True
+    return False
 
 
 def _doc_type_workflow_evidence(
@@ -1263,14 +1307,15 @@ def generate_candidate_method(
         # A dispatch selector that is STILL unpinned means the page offered
         # a choice we could not resolve — generating now would ship a method
         # that submits incomplete requests (observed live: esamudra answers
-        # a searchType-less CDC query with a service-error fragment). Fail
-        # generation loudly instead; the method would never pass a live test
-        # case anyway.
+        # a selector-less CDC query with a service-error fragment). Detected
+        # STRUCTURALLY (param linked to a page <select> by shared vocabulary,
+        # see _is_dispatch_selector) — no portal-specific naming knowledge.
         _unpinned = [
             p for p in xhr_contract.get("dynamic_params", [])
-            if "search" in p.lower() and p.lower().endswith("type")
+            if p not in workflow_params
+            and _is_dispatch_selector(p, xhr_contract.get("workflow_options") or [])
         ]
-        if _unpinned and xhr_contract.get("workflow_options"):
+        if _unpinned:
             raise RuntimeError(
                 f"Dispatch selector(s) {_unpinned} could not be pinned to any "
                 "page option; refusing to generate a method that would submit "

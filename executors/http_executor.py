@@ -233,33 +233,38 @@ def _is_5xx(status: int) -> bool:
     return 500 <= status <= 599
 
 
-# Body-level service errors: some registries answer a throttled or mid-outage
-# request with HTTP 200 and an error fragment in the body ("Sorry ! Unable to
-# process your request,please try later" — esamudra, live-observed 2026-09-28
-# under pipeline burst traffic while single manual probes passed fine). Such a
-# body is NOT a lookup result, so it is retried like a 5xx; if every attempt
-# errors, the host-side classifier recognizes the same fragments and degrades
-# to TECHNICAL_FAILURE instead of a false REJECTED.
-_BODY_SERVICE_ERROR_MARKERS = (
-    "please try later", "please try again", "try again later",
-    "service unavailable", "temporarily unavailable",
-    "internal server error", "object reference not set",
-    # dmamyanmar.org answers a VALID lookup with the 19-byte string
-    # "VerificationError" often enough that it must be retried (live:
-    # the same CDC+serial+passport combo returned a full record, then
-    # "VerificationError", then a full record again). A genuinely wrong
-    # lookup simply retries to the same string; the host-side classifier
-    # then degrades it to TECHNICAL_FAILURE via the tiny-response guard —
-    # never a definitive REJECTED from one ambiguous byte-string.
-    "verificationerror",
+# Body-level retry rules, deliberately GENERIC (no portal vocabulary): some
+# registries answer throttled/mid-outage requests with HTTP 200 and an error
+# fragment in the body. We retry when the body is evidence of a server-side
+# problem — framework error-page titles (ASP.NET/Java/PHP universals) or HTTP
+# reason phrases — or when it is TOO SMALL to be a record lookup result at
+# all (retrying an idempotent lookup is always safe; the worst case is a few
+# seconds of latency). Anything ambiguous that survives retries is classified
+# host-side as TECHNICAL_FAILURE, never a definitive verdict. Portal-specific
+# error shapes belong in the method's own learned not_found_signatures.
+_FRAMEWORK_ERROR_MARKERS = (
+    "object reference not set",          # ASP.NET NullReferenceException page
+    "server error in '/' application",   # ASP.NET yellow-screen-of-death
+    "exception",                         # Java/PHP/ASP error pages
+    "stack trace",
 )
+_HTTP_REASON_PHRASES = (
+    "service unavailable", "internal server error", "bad gateway",
+    "gateway timeout", "gateway time-out",
+)
+_TINY_BODY_RETRY_LIMIT = 200
 
 
-def _body_has_service_error(result) -> bool:
+def _body_worth_retrying(result) -> bool:
     if not (isinstance(result, tuple) and len(result) >= 2 and isinstance(result[1], str)):
         return False
-    body = result[1].lower()
-    return any(marker in body for marker in _BODY_SERVICE_ERROR_MARKERS)
+    body = result[1].strip()
+    if not body:
+        return False
+    lowered = body.lower()
+    if any(marker in lowered for marker in _FRAMEWORK_ERROR_MARKERS + _HTTP_REASON_PHRASES):
+        return True
+    return len(body) < _TINY_BODY_RETRY_LIMIT
 
 
 def _with_retry(fn, *args, **kwargs):
@@ -278,7 +283,7 @@ def _with_retry(fn, *args, **kwargs):
             isinstance(result, tuple) and result
             and isinstance(result[0], int)
             and attempt < attempts
-            and (_is_5xx(result[0]) or _body_has_service_error(result))
+            and (_is_5xx(result[0]) or _body_worth_retrying(result))
         ):
             time.sleep(1.5 * (2 ** (attempt - 1)) + random.uniform(0, 0.5))
             continue

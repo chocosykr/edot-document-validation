@@ -102,27 +102,45 @@ class TestMethodGeneration(unittest.TestCase):
                 generate_candidate_method(profile, db_source)
 
     def test_generate_from_discovery_result(self):
+        """A discovery result maps onto a valid method (LLM mocked: hermetic).
+
+        This test previously called the LIVE model against a fake URL — it
+        could only pass with network access. The pipeline under test is the
+        deterministic mapping of the model's proposal onto a method bundle,
+        so the model is mocked exactly as in test_generate_from_db_source.
+        """
         profile = {
             "issuing_country": "Panama",
             "document_type": "CoC"
         }
         discovery_result = {
-            "query": "Panama CoC verification",
-            "source": {
-                "title": "Panama Verification API",
-                "url": "https://api.panama-maritime.com/verify"
-            },
-            "analysis": {
-                "summary": "This is an API for Panama CoC."
-            }
+            # The engine passes discovery_result["result"] — the flat source
+            # dict — into generate_candidate_method, not the envelope.
+            "url": "https://api.panama-maritime.com/verify",
+            "page_url": "https://api.panama-maritime.com/verify",
+            "verification_available": True,
         }
-        
-        method = generate_candidate_method(profile, discovery_result)
-        
+        with patch(
+            "generation.generator._fetch_page_structure",
+            return_value={"summary": "", "inline_js": "", "workflow_options": []},
+        ), patch(
+            "generation.generator.generate_json",
+            return_value={
+                "method_id": "M_PAN_COC_001",
+                "method_type": "HTTP",
+                "execution_steps": [{
+                    "action": "REQUEST", "method": "GET",
+                    "url": "https://api.panama-maritime.com/verify",
+                    "params": {"cert": "{{document_number}}"},
+                }],
+                "required_inputs": ["document_number"],
+            },
+        ):
+            method = generate_candidate_method(profile, discovery_result)
+
         self.assertEqual(method.country, "Panama")
         self.assertEqual(method.document_type, "CoC")
         self.assertEqual(method.source_url, "https://api.panama-maritime.com/verify")
-        # Should be detected as HTTP based on our mock logic
         self.assertEqual(method.method_type, MethodType.HTTP)
         self.assertEqual(method.status, MethodStatus.TESTING)
 

@@ -29,19 +29,30 @@ class TestFieldComparison(unittest.TestCase):
         self.assertEqual(result.evidence["comparison"], "field_match")
 
     def test_empty_or_not_found_response_is_rejected(self):
-        result = compare_response(
-            self._result("<p>Database could not find the match.</p>"),
-            {"document_number": "ABC123", "date_of_birth": "01/01/1990"},
+        """A not-found body rejects ONLY when the method learned its shape;
+        without a learned signature it cannot ground a verdict."""
+        body = "<p>Database could not find the match.</p>"
+        profile = {"document_number": "ABC123", "date_of_birth": "01/01/1990"}
+
+        unlearned = compare_response(self._result(body), profile)
+        self.assertEqual(unlearned.decision_status, ExecutionDecisionStatus.TECHNICAL_FAILURE)
+
+        learned = compare_response(
+            self._result(body), profile,
+            not_found_signatures=[{"contains": "could not find the match"}],
         )
-        self.assertEqual(result.decision_status, ExecutionDecisionStatus.REJECTED)
+        self.assertEqual(learned.decision_status, ExecutionDecisionStatus.REJECTED)
+        self.assertEqual(learned.evidence["comparison"], "learned_not_found_signature")
 
     def test_service_error_response_is_technical_failure_not_rejection(self):
-        """A transient portal outage must never become a definitive INVALID.
+        """Portal error phrasing is NOT hardcoded — the response carries no
+        parseable record fields, so it cannot ground a definitive verdict.
 
         Live case (2026-09-28): esamudra answered a valid CDC lookup with
         "Sorry ! Unable to process your request,please try later" and the
-        shared marker list classified it REJECTED / HIGH confidence — a
-        false negative. Service errors degrade to TECHNICAL_FAILURE.
+        (then-hardcoded) marker list classified it REJECTED / HIGH. Under
+        the grounding rules a tiny unparseable body degrades to
+        TECHNICAL_FAILURE for ANY portal, known or unknown.
         """
         result = compare_response(
             self._result(
@@ -51,19 +62,36 @@ class TestFieldComparison(unittest.TestCase):
             {"document_number": "MUM179416", "date_of_birth": "07/09/1992"},
         )
         self.assertEqual(result.decision_status, ExecutionDecisionStatus.TECHNICAL_FAILURE)
-        self.assertEqual(result.evidence["comparison"], "service_error_in_response")
+        self.assertIn(result.evidence["comparison"], ("tiny_unparseable_response", "framework_error_page"))
 
-    def test_not_found_still_rejects(self):
-        """Genuine not-found phrasing keeps its definitive REJECTED verdict."""
-        result = compare_response(
-            self._result(
-                "<table class='newStrip'>Our Database could not find the match "
-                "of CDC No. you are looking for</table>"
-            ),
-            {"document_number": "MUM179416", "date_of_birth": "07/09/1992"},
+    def test_not_found_rejects_only_via_learned_signature(self):
+        """A not-found verdict requires the method's OWN learned signature.
+
+        Generic phrase matching is gone: 'could not find' with no learned
+        signature and no parseable fields is a tiny unparseable body ->
+        TECHNICAL_FAILURE. When the method HAS learned the shape (from its
+        known-fake probe), the same body is a true REJECTED.
+        """
+        body = (
+            "<table class='newStrip'>Our Database could not find the match "
+            "of CDC No. you are looking for</table>"
         )
-        self.assertEqual(result.decision_status, ExecutionDecisionStatus.REJECTED)
-        self.assertEqual(result.evidence["comparison"], "not_found_marker_in_response")
+        profile = {"document_number": "MUM179416", "date_of_birth": "07/09/1992"}
+        no_sig = compare_response(
+            self._result(body), profile, field_mapping={"text_mappings": {}}
+        )
+        self.assertEqual(no_sig.decision_status, ExecutionDecisionStatus.TECHNICAL_FAILURE)
+
+        learned = compare_response(
+            self._result(body),
+            profile,
+            field_mapping={
+                "text_mappings": {},
+                "not_found_signatures": [{"contains": "could not find the match"}],
+            },
+        )
+        self.assertEqual(learned.decision_status, ExecutionDecisionStatus.REJECTED)
+        self.assertEqual(learned.evidence["comparison"], "learned_not_found_signature")
 
     def test_empty_response_is_technical_failure_not_rejection(self):
         result = compare_response(

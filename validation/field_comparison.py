@@ -24,27 +24,34 @@ from rapidfuzz.fuzz import ratio
 from execution.models import ExecutionDecisionStatus, ExecutionResult
 
 
-# Two classes of marker, deliberately separated (live case, 2026-09-28):
-# esamudra answered a valid CDC lookup with "Sorry ! Unable to process your
-# request,please try later" — a TRANSIENT SERVICE ERROR — and the shared
-# marker list classified it as a definitive REJECTED (INVALID, HIGH
-# confidence). That is the most dangerous wrong answer the system can emit.
-# A service failure must degrade to TECHNICAL_FAILURE (retried upstream,
-# never a verdict). Only genuine not-found phrasing may reject.
-_SERVICE_ERROR_MARKERS = (
-    "please try later", "please try again", "try again later",
-    "unable to process", "service unavailable", "temporarily unavailable",
-    "internal server error", "server error", "object reference not set",
-    "exception", "an error occurred", "error occurred",
+# Classification is GROUNDING-BASED, not vocabulary-based. The two channels
+# below are web-platform universals (present in any ASP/JSP/PHP stack) — no
+# portal-specific phrases are hardcoded; per-portal error shapes live in each
+# method's own learned ``not_found_signatures`` (captured from that method's
+# known-fake structural probe, see validation/validator.py).
+
+# A tiny body with NO parseable record fields and NO field-mapping evidence
+# carries no proof a lookup happened. Classifying it REJECTED would report
+# INVALID with HIGH evidence — the most dangerous wrong answer.
+_TINY_UNPARSEABLE_LIMIT = 200
+
+# Error-page <title>s emitted by the web frameworks themselves. These are
+# platform-universal phrases, not portal vocabulary: any ASP.NET/Java/PHP
+# stack crashes the same way regardless of which registry runs on it.
+_FRAMEWORK_ERROR_TITLES = (
+    "object reference not set",          # ASP.NET NullReferenceException page
+    "server error in '/' application",   # ASP.NET yellow-screen-of-death
+    "exception",                         # Java/PHP/ASP error pages
+    "stack trace",                       # debug error pages
 )
-_NOT_FOUND_MARKERS = (
-    "could not find", "could not find the match", "not found", "no record",
-    "no match", "no records found", "details not available",
-    "does not exist",
-)
-# Kept for backward-compatible callers; the combined set is only used where a
-# single "this body is not a record" check is needed.
-_ERROR_MARKERS = _SERVICE_ERROR_MARKERS + _NOT_FOUND_MARKERS
+
+
+def _framework_error_page(response: str) -> bool:
+    """True when the body is an HTML error page titled by a web framework."""
+    if not response:
+        return False
+    lowered = response.lower()
+    return any(marker in lowered for marker in _FRAMEWORK_ERROR_TITLES)
 STRONG_MATCH_THRESHOLD = 90
 AMBIGUOUS_MATCH_THRESHOLD = 55
 
@@ -244,10 +251,52 @@ def _compare_with_discovered_mapping(
     }
 
 
+def _matches_learned_signature(
+    *,
+    status: Optional[int],
+    body: str,
+    signatures: Optional[list],
+) -> bool:
+    """Does this response match one of the method's LEARNED not-found shapes?
+
+    ``signatures`` are the method's own ``not_found_signatures`` entries:
+    [{"status": 400, "contains": "..."}] with either key optional. This is
+    the host-side consumer of the same channel the executor uses
+    (``_matches_not_found_signature``); shapes are per-method, learned from
+    that method's known-fake structural probe — never a global phrase list.
+    """
+    if not signatures or body is None:
+        return False
+
+    def _norm(text: str) -> str:
+        return "".join(str(text).lower().split())
+
+    body_norm = _norm(body)
+    for signature in signatures:
+        if not isinstance(signature, dict):
+            continue
+        sig_status = signature.get("status")
+        if sig_status is not None and status is not None:
+            try:
+                if int(sig_status) != int(status):
+                    continue
+            except (TypeError, ValueError):
+                continue
+        contains = signature.get("contains")
+        if contains:
+            if _norm(contains) not in body_norm:
+                continue
+            return True
+        elif sig_status is not None and status is not None:
+            return True
+    return False
+
+
 def compare_response(
     result: ExecutionResult,
     raw_profile: Dict[str, str],
     field_mapping: Optional[Dict[str, Any]] = None,
+    not_found_signatures: Optional[list] = None,
 ) -> ExecutionResult:
     """Classify an executor response using per-method field mapping.
 
@@ -257,6 +306,10 @@ def compare_response(
         field_mapping: The method's discovered field mapping (from
             expected_responses.field_mapping). If None, falls back to the
             legacy three-field comparison for backward compatibility.
+        not_found_signatures: The method's OWN learned not-found shapes
+            (expected_responses.not_found_signatures, captured from its
+            known-fake structural probe). The ONLY source of a definitive
+            not-found REJECTED — never a global phrase list.
     """
     if result.decision_status == ExecutionDecisionStatus.TECHNICAL_FAILURE:
         return result
@@ -275,24 +328,48 @@ def compare_response(
                 "error": "Empty response body from verification endpoint.",
             })
 
-        # Check for error markers in the response text.
-        # SERVICE errors take precedence over not-found markers: a portal
-        # mid-outage must never produce a definitive INVALID verdict.
+        # GROUNDING-BASED classification (generic): before any verdict, check
+        # what the response is evidence OF.
+        # 1. The method's OWN learned not-found signatures (captured from its
+        #    known-fake structural probe) — a true, scoped REJECTED.
+        # 2. Framework error pages — a server-side crash is a service error,
+        #    never a document verdict.
+        # 3. Tiny unparseable fragments — no proof a record lookup happened.
+        # Only a body that parses into comparable record fields may produce a
+        # definitive verdict, and even then field comparison decides.
         resp_text = _clean(json.dumps(parsed) if parsed else response)
-        if any(marker in resp_text for marker in _SERVICE_ERROR_MARKERS):
-            return result.model_copy(update={
-                "decision_status": ExecutionDecisionStatus.TECHNICAL_FAILURE,
-                "evidence": {**result.evidence, "comparison": "service_error_in_response"},
-                "error": (
-                    "Verification endpoint returned a service-error message "
-                    "(not a record lookup result); refusing to classify as "
-                    "REJECTED."
-                ),
-            })
-        if any(marker in resp_text for marker in _NOT_FOUND_MARKERS):
+        http_status = result.evidence.get("http_status") if isinstance(result.evidence, dict) else None
+        signatures = not_found_signatures
+        if signatures is None and isinstance(field_mapping, dict):
+            signatures = field_mapping.get("not_found_signatures")
+        if _matches_learned_signature(
+            status=http_status, body=resp_text, signatures=signatures
+        ):
             return result.model_copy(update={
                 "decision_status": ExecutionDecisionStatus.REJECTED,
-                "evidence": {**result.evidence, "comparison": "not_found_marker_in_response"},
+                "evidence": {**result.evidence, "comparison": "learned_not_found_signature"},
+            })
+        if _framework_error_page(response):
+            return result.model_copy(update={
+                "decision_status": ExecutionDecisionStatus.TECHNICAL_FAILURE,
+                "evidence": {**result.evidence, "comparison": "framework_error_page"},
+                "error": (
+                    "Verification endpoint returned a server error page; "
+                    "refusing to classify as REJECTED."
+                ),
+            })
+        if (
+            parsed is None
+            and len(response.strip()) < _TINY_UNPARSEABLE_LIMIT
+            and not (field_mapping or {}).get("text_mappings")
+        ):
+            return result.model_copy(update={
+                "decision_status": ExecutionDecisionStatus.TECHNICAL_FAILURE,
+                "evidence": {**result.evidence, "comparison": "tiny_unparseable_response"},
+                "error": (
+                    f"Response body ({len(response.strip())} chars) contained "
+                    "no parseable record data — refusing to classify as REJECTED."
+                ),
             })
 
         comparison = _compare_with_discovered_mapping(response, raw_profile, field_mapping)
@@ -370,48 +447,45 @@ def compare_response(
     reference = _reference_fields(raw_profile)
     haystack = " ".join(extracted.values()) or _response_text(response)
 
-    # Legacy fallback path (no discovered mapping): mirror the same
-    # service-error vs not-found split — a transient portal outage must
-    # degrade to TECHNICAL_FAILURE, never to a definitive INVALID.
+    # Legacy fallback path: same GROUNDING-BASED rules as the mapping path —
+    # a portal outage must degrade to TECHNICAL_FAILURE, never INVALID.
     if not response:
-        status = ExecutionDecisionStatus.TECHNICAL_FAILURE
-    elif any(marker in haystack for marker in _SERVICE_ERROR_MARKERS):
-        status = ExecutionDecisionStatus.TECHNICAL_FAILURE
-    elif any(marker in haystack for marker in _NOT_FOUND_MARKERS):
-        status = ExecutionDecisionStatus.REJECTED
-    else:
-        status = None
-    if status is not None:
         return result.model_copy(update={
-            "decision_status": status,
-            "evidence": {
-                **result.evidence,
-                "comparison": (
-                    "empty_response" if not response
-                    else "service_error_in_response"
-                    if status == ExecutionDecisionStatus.TECHNICAL_FAILURE
-                    else "not_found_marker_in_response"
-                ),
-                "extracted_fields": extracted,
-            },
+            "decision_status": ExecutionDecisionStatus.TECHNICAL_FAILURE,
+            "evidence": {**result.evidence, "comparison": "empty_response", "extracted_fields": extracted},
+            "error": "Empty response body from verification endpoint.",
+        })
+    http_status = result.evidence.get("http_status") if isinstance(result.evidence, dict) else None
+    if _matches_learned_signature(
+        status=http_status, body=_response_text(response), signatures=not_found_signatures
+    ) or _matches_learned_signature(
+        status=http_status, body=response, signatures=not_found_signatures
+    ):
+        return result.model_copy(update={
+            "decision_status": ExecutionDecisionStatus.REJECTED,
+            "evidence": {**result.evidence, "comparison": "learned_not_found_signature", "extracted_fields": extracted},
+        })
+    if _framework_error_page(response):
+        return result.model_copy(update={
+            "decision_status": ExecutionDecisionStatus.TECHNICAL_FAILURE,
+            "evidence": {**result.evidence, "comparison": "framework_error_page", "extracted_fields": extracted},
             "error": (
-                "Empty response body from verification endpoint." if not response
-                else "Verification endpoint returned a service-error message "
-                "(not a record lookup result); refusing to classify as REJECTED."
-                if status == ExecutionDecisionStatus.TECHNICAL_FAILURE
-                else result.error
+                "Verification endpoint returned a server error page; "
+                "refusing to classify as REJECTED."
             ),
         })
 
-    # A non-empty body that yields NO parseable record fields and is tiny
-    # carries no evidence that a record lookup happened at all — it is as
-    # likely a portal error fragment (e.g. the 19-byte "VerificationError"
-    # that dmamyanmar.org returns on a broken token/session flow) as a
-    # genuine not-found. Classifying it REJECTED would report INVALID with
-    # HIGH evidence — the most dangerous wrong answer. Fail to
-    # TECHNICAL_FAILURE instead. Genuine not-founds are unaffected: they are
-    # either structured (fields extracted) or carry not-found markers.
-    if not extracted and len(response.strip()) < 200:
+    # A body that yields NO parseable record fields and is tiny carries no
+    # evidence that a record lookup happened at all — it is as likely a
+    # portal error fragment as a genuine not-found. Classifying it REJECTED
+    # would report INVALID with HIGH evidence — the most dangerous wrong
+    # answer. Fail to TECHNICAL_FAILURE instead. (The fallback keys
+    # response_text/response_values are the extractor saying "no labeled
+    # structure found" — they are not record fields.)
+    _has_real_fields = any(
+        key not in ("response_text", "response_values") for key in extracted
+    )
+    if not _has_real_fields and len(response.strip()) < _TINY_UNPARSEABLE_LIMIT:
         return result.model_copy(update={
             "decision_status": ExecutionDecisionStatus.TECHNICAL_FAILURE,
             "evidence": {
