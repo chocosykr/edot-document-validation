@@ -396,6 +396,16 @@ def decide(body: str, expected: dict) -> str:
     if not body or not body.strip():
         return "TECHNICAL_FAILURE"  # empty response is never a genuine INVALID
     if expected.get("comparison_mode") == "field_match":
+        text_mappings = (expected.get("field_mapping") or {}).get("text_mappings")
+        if not text_mappings:
+            body_lower = body.lower()
+            for kw in expected.get("failure_keywords", []):
+                if kw.lower() in body_lower:
+                    return "REJECTED"
+            for kw in expected.get("success_keywords", []):
+                if kw.lower() in body_lower:
+                    return "VERIFIED"
+            return "UNCERTAIN"
         return "UNCERTAIN"  # engine's compare_response() decides on real content
     body_lower = body.lower()
     for kw in expected.get("success_keywords", []):

@@ -540,7 +540,30 @@ def _matches_not_found_signature(status_code, body: str, expected: dict) -> bool
 
 
 def decide(body: str, expected: dict) -> str:
+    # When comparison_mode is field_match AND the method does not yet carry
+    # discovered text_mappings, the validator has nothing to compare against
+    # and will return TECHNICAL_FAILURE for any tiny response. That is correct
+    # for a real document lookup whose fields we cannot match, but it kills the
+    # structural probe: the known-fake values we submit are deliberately fake,
+    # so the site's deterministic refusal of them is the one thing we CAN read
+    # without a field mapping --- the ordinary keyword channel.
+    #
+    # Fall through to keyword scanning when there are no text_mappings, so a
+    # method's own declared failure_keywords (e.g. "VerificationError") can
+    # turn the structural probe into a definitive REJECTED, which the validator
+    # then captures as a learned not_found_signature on the retest.
     if expected.get("comparison_mode") == "field_match":
+        text_mappings = (expected.get("field_mapping") or {}).get("text_mappings")
+        if not text_mappings:
+            # No discovered mapping yet --- use keyword channel.
+            body_lower = body.lower()
+            for kw in expected.get("failure_keywords", []):
+                if kw.lower() in body_lower:
+                    return "REJECTED"
+            for kw in expected.get("success_keywords", []):
+                if kw.lower() in body_lower:
+                    return "VERIFIED"
+            return "UNCERTAIN"
         return "UNCERTAIN"
 
     # 1. JSON path check

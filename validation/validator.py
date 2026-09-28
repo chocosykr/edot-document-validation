@@ -460,7 +460,6 @@ class MethodValidator:
                 outcome != AttemptOutcome.PASSED
                 and attempt_num < MAX_ATTEMPTS_PER_TEST_CASE
                 and http_status is not None
-                and 400 <= http_status < 500
                 and (exec_result.raw_response or "").strip()
                 and (method.expected_responses or {}).get("comparison_mode") == "field_match"
                 # A captcha-rejection body is NEVER a not-found signature:
@@ -468,6 +467,23 @@ class MethodValidator:
                 # confirmed document rejection. The executor redoes the
                 # captcha round in-run; the validator must not enshrine it.
                 and "captcha" not in (exec_result.raw_response or "").lower()
+                and (
+                    # The executor returned REJECTED via its keyword channel
+                    # (the body carried a declared failure keyword). That is
+                    # the site's deterministic refusal of the known-fake
+                    # structural-probe values --- the canonical "not found"
+                    # shape. Capture it as a narrow learned signature
+                    # regardless of HTTP status, because many registries
+                    # answer "not found" as HTTP 200 + an error token
+                    # (e.g. DMA returns 200 + "VerificationError").
+                    exec_result.decision_status.value == "REJECTED"
+                    # Legacy path: a 4xx response with a body and no matching
+                    # signature (the executor classifies it TECHNICAL_FAILURE).
+                    # The known-fake probe's refusal is still the canonical
+                    # not-found shape --- capture it so the retest can use the
+                    # learned signature.
+                    or (400 <= http_status < 500)
+                )
             ):
                 body_head = exec_result.raw_response.strip()[:200]
                 expected = dict(method.expected_responses or {})
