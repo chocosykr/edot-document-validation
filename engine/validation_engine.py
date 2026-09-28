@@ -196,14 +196,35 @@ class ValidationEngine:
                 )
                 db_sources = same_country
 
+        # A failed generation off a DB source must not end the run when
+        # discovery can still find a doc-type-specific portal. Live case
+        # (2026-09-28): the Indian SID's only DB source was esamudra, tagged
+        # IN_CDC/IN_INDOS — the generator's evidence gate correctly refused
+        # to mint an SID method there, and only discovery (seeded from the
+        # document's printed dgshipping.gov.in domain) could find the SID
+        # verifier. Fall-through is deliberately narrow: generation/refusal
+        # failures (TECHNICAL_FAILURE) retry via discovery; a candidate that
+        # DID generate but failed its structural validation stays visible in
+        # the registry as TESTING and does not trigger a second search.
+        generation_failure: Optional[ValidationDecision] = None
+
         if db_sources:
             logger.info(
                 "Found %d source(s) in DB. Generating candidate method.",
                 len(db_sources),
             )
             source_info = db_sources[0]
-            return self._generate_validate_and_execute(
+            decision = self._generate_validate_and_execute(
                 redacted_profile, source_info
+            )
+            if decision.decision_status != DecisionStatus.TECHNICAL_FAILURE:
+                return decision
+            generation_failure = decision
+            if not self.enable_discovery:
+                return decision
+            logger.warning(
+                "Generation from DB source failed (%s); falling through to discovery.",
+                decision.failure_reason,
             )
 
         # ----------------------------------------------------------
@@ -221,9 +242,16 @@ class ValidationEngine:
                     )
             except Exception as e:
                 logger.error("Discovery agent failed: %s", e)
+                if generation_failure:
+                    return generation_failure
                 return self._unavailable(
                     f"Discovery agent failed: {e}"
                 )
+
+        if generation_failure:
+            # Discovery found nothing; the generation failure is the more
+            # informative cause — report it rather than a generic "no source".
+            return generation_failure
 
         # ----------------------------------------------------------
         # Step 4: Nothing found — cannot validate
@@ -499,6 +527,14 @@ class ValidationEngine:
 
         if not isinstance(credentials, dict):
             credentials = {}
+
+        # Drop OCR-garbage identity values (e.g. a DOB that cannot be a real
+        # calendar date, or a DOB printed AFTER the issue date) BEFORE they
+        # can be submitted to a live registry. A garbage credential behaves
+        # like a missing one: the engine refuses, or folder mode resolves the
+        # field from another document — never a false not-found.
+        from execution.safety import credible_credentials
+        credentials = credible_credentials(credentials)
 
         for key, value in credentials.items():
             val_str = str(value).strip()

@@ -702,7 +702,14 @@ def _infer_workflow_params(
         mapped = str(param_mapping.get(param) or "").lower()
         if param in workflow_params or "search" not in param.lower():
             continue
-        if "document_type" not in mapped and "document" not in mapped:
+        # A PUNTED mapping (null) must not skip pinning: the page's own
+        # <select> is the evidence, not the model's guess. (Live case,
+        # 2026-09-28: the mapping model returned searchType=null, the pinning
+        # loop was skipped entirely, the request went out WITHOUT the
+        # dispatch selector, and esamudra answered 108 chars of "please try
+        # later".) Only skip when the model mapped the param to something
+        # else entirely.
+        if mapped and "document_type" not in mapped and "document" not in mapped:
             continue
         if "document_type_key" in mapped:
             mapped = document_type_key(redacted_profile.get("document_type", ""))
@@ -1252,6 +1259,23 @@ def generate_candidate_method(
             if name in xhr_contract["dynamic_params"] and value:
                 xhr_contract["dynamic_params"].remove(name)
                 xhr_contract.setdefault("static_params", {})[name] = str(value)
+
+        # A dispatch selector that is STILL unpinned means the page offered
+        # a choice we could not resolve — generating now would ship a method
+        # that submits incomplete requests (observed live: esamudra answers
+        # a searchType-less CDC query with a service-error fragment). Fail
+        # generation loudly instead; the method would never pass a live test
+        # case anyway.
+        _unpinned = [
+            p for p in xhr_contract.get("dynamic_params", [])
+            if "search" in p.lower() and p.lower().endswith("type")
+        ]
+        if _unpinned and xhr_contract.get("workflow_options"):
+            raise RuntimeError(
+                f"Dispatch selector(s) {_unpinned} could not be pinned to any "
+                "page option; refusing to generate a method that would submit "
+                "incomplete requests."
+            )
 
         if llm_mapping:
             llm_mapping = dict(llm_mapping)

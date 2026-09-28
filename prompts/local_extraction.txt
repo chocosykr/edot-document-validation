@@ -63,8 +63,25 @@ Rules for this block:
   `document_numbers`, not in `document_holder`, not in `identifying_fields`.
 - If a value is missing or unclear, return null — never a token, never a guess.
 - Never place redaction tokens in this block.
-- Also include `full_name` when it is clearly readable. It is kept in memory
+- Also include `full_name` when it is clearly readable.  It is kept in memory
   only for local response comparison and must never enter the redacted output.
+
+SOURCE DISCOVERY HINTS:
+
+`source_discovery_hints` lists the issuing authority's online verification
+or lookup services AS PRINTED ON THIS DOCUMENT — a QR target, a
+"verify at ..." footer, or the official website in the letterhead/footer.
+These seeds are how the system finds the verification portal without any
+external search, so:
+
+- Preserve each hint EXACTLY as printed. Never invent, complete, or
+  normalize a URL.
+- Include the bare domain when only that is printed
+  (e.g. "www.dgshipping.gov.in").
+- Include scheme-full URLs when printed
+  (e.g. "https://example.gov/verify").
+- Do NOT include generic search engines, app stores, or social media pages.
+- If the document prints no such pointer, return [].
 
 EXTRACTION RULES:
 

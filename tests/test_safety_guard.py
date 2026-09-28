@@ -10,6 +10,8 @@ import unittest
 from execution.safety import (
     guard_inputs,
     is_placeholder_value,
+    is_credible_document_date,
+    credible_credentials,
     UnsafeInputError,
 )
 from execution.docker_runner import DockerMethodRunner
@@ -37,6 +39,58 @@ class TestIsPlaceholderValue(unittest.TestCase):
     def test_empty_is_placeholder(self):
         self.assertTrue(is_placeholder_value(""))
         self.assertTrue(is_placeholder_value(None))
+
+
+class TestCredibleCredentials(unittest.TestCase):
+    """OCR-garbage identity values must be dropped before live submission.
+
+    Live case (2026-09-28): the CDC booklet's OCR produced DOB "07-BSF-92"
+    (not a date) and "22/11/2020" (after the printed issue date). Both were
+    submitted to the live esamudra registry; a genuinely missing credential
+    would have been refused or resolved cross-document instead.
+    """
+
+    def test_garbled_dob_is_dropped(self):
+        creds = credible_credentials({"date_of_birth": "07-BSF-92", "cdc_number": "MUM179416"})
+        self.assertNotIn("date_of_birth", creds)
+        self.assertEqual(creds["cdc_number"], "MUM179416")
+
+    def test_real_dob_survives(self):
+        creds = credible_credentials({"date_of_birth": "07-sep-1992"})
+        self.assertEqual(creds["date_of_birth"], "07-sep-1992")
+
+    def test_slash_format_dob_survives(self):
+        creds = credible_credentials({"date_of_birth": "07/09/1992"})
+        self.assertEqual(creds["date_of_birth"], "07/09/1992")
+
+    def test_dob_after_issue_date_is_dropped(self):
+        creds = credible_credentials({
+            "date_of_birth": "22/11/2020",
+            "issue_date": "22/01/2020",
+            "document_number": "MUM179416",
+        })
+        self.assertNotIn("date_of_birth", creds)
+        self.assertEqual(creds["document_number"], "MUM179416")
+
+    def test_dob_before_issue_date_survives(self):
+        creds = credible_credentials({
+            "date_of_birth": "07/09/1992",
+            "issue_date": "22/01/2020",
+        })
+        self.assertEqual(creds["date_of_birth"], "07/09/1992")
+
+    def test_no_issue_date_means_no_timeline_check(self):
+        creds = credible_credentials({"date_of_birth": "22/11/2020"})
+        self.assertEqual(creds["date_of_birth"], "22/11/2020")
+
+    def test_garbled_dob_fails_credibility(self):
+        self.assertFalse(is_credible_document_date("07-BSF-92"))
+        self.assertTrue(is_credible_document_date("07-sep-1992"))
+        self.assertTrue(is_credible_document_date("22/11/2020"))
+
+    def test_none_and_empty_are_noops(self):
+        self.assertEqual(credible_credentials(None), {})
+        self.assertEqual(credible_credentials({"date_of_birth": ""}), {})
 
 
 class TestGuardInputs(unittest.TestCase):

@@ -35,6 +35,36 @@ class TestFieldComparison(unittest.TestCase):
         )
         self.assertEqual(result.decision_status, ExecutionDecisionStatus.REJECTED)
 
+    def test_service_error_response_is_technical_failure_not_rejection(self):
+        """A transient portal outage must never become a definitive INVALID.
+
+        Live case (2026-09-28): esamudra answered a valid CDC lookup with
+        "Sorry ! Unable to process your request,please try later" and the
+        shared marker list classified it REJECTED / HIGH confidence — a
+        false negative. Service errors degrade to TECHNICAL_FAILURE.
+        """
+        result = compare_response(
+            self._result(
+                "<span class='newStrip'><b><font size='4' >Sorry ! Unable to "
+                "process your request,please try later</b></span>"
+            ),
+            {"document_number": "MUM179416", "date_of_birth": "07/09/1992"},
+        )
+        self.assertEqual(result.decision_status, ExecutionDecisionStatus.TECHNICAL_FAILURE)
+        self.assertEqual(result.evidence["comparison"], "service_error_in_response")
+
+    def test_not_found_still_rejects(self):
+        """Genuine not-found phrasing keeps its definitive REJECTED verdict."""
+        result = compare_response(
+            self._result(
+                "<table class='newStrip'>Our Database could not find the match "
+                "of CDC No. you are looking for</table>"
+            ),
+            {"document_number": "MUM179416", "date_of_birth": "07/09/1992"},
+        )
+        self.assertEqual(result.decision_status, ExecutionDecisionStatus.REJECTED)
+        self.assertEqual(result.evidence["comparison"], "not_found_marker_in_response")
+
     def test_empty_response_is_technical_failure_not_rejection(self):
         result = compare_response(
             self._result(""),

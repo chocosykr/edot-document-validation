@@ -233,8 +233,29 @@ def _is_5xx(status: int) -> bool:
     return 500 <= status <= 599
 
 
+# Body-level service errors: some registries answer a throttled or mid-outage
+# request with HTTP 200 and an error fragment in the body ("Sorry ! Unable to
+# process your request,please try later" — esamudra, live-observed 2026-09-28
+# under pipeline burst traffic while single manual probes passed fine). Such a
+# body is NOT a lookup result, so it is retried like a 5xx; if every attempt
+# errors, the host-side classifier recognizes the same fragments and degrades
+# to TECHNICAL_FAILURE instead of a false REJECTED.
+_BODY_SERVICE_ERROR_MARKERS = (
+    "please try later", "please try again", "try again later",
+    "service unavailable", "temporarily unavailable",
+    "internal server error", "object reference not set",
+)
+
+
+def _body_has_service_error(result) -> bool:
+    if not (isinstance(result, tuple) and len(result) >= 2 and isinstance(result[1], str)):
+        return False
+    body = result[1].lower()
+    return any(marker in body for marker in _BODY_SERVICE_ERROR_MARKERS)
+
+
 def _with_retry(fn, *args, **kwargs):
-    """Wrapper combining exception-retry with 5xx-response retry."""
+    """Wrapper combining exception-retry with 5xx/body-service-error retry."""
     attempts = 3
     result = None
     for attempt in range(1, attempts + 1):
@@ -247,8 +268,9 @@ def _with_retry(fn, *args, **kwargs):
             continue
         if (
             isinstance(result, tuple) and result
-            and isinstance(result[0], int) and _is_5xx(result[0])
+            and isinstance(result[0], int)
             and attempt < attempts
+            and (_is_5xx(result[0]) or _body_has_service_error(result))
         ):
             time.sleep(1.5 * (2 ** (attempt - 1)) + random.uniform(0, 0.5))
             continue

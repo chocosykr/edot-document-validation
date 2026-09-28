@@ -17,6 +17,7 @@ foreign government server. Every execution path therefore funnels through
 """
 
 import re
+from datetime import datetime
 from typing import Any, Dict, List
 
 # A redaction token looks like [PERSON_NAME], [DOCUMENT_NUMBER], [REDACTED]…
@@ -152,6 +153,73 @@ def fill_contact_only_inputs(inputs: Dict[str, Any], method) -> Dict[str, Any]:
         if not str(filled.get(name, "") or "").strip():
             filled[name] = synthesize_contact_value(name)
     return filled
+
+
+# Date formats a printed date may take; used by credibility checks.
+_DATE_FORMATS = (
+    "%d/%m/%Y", "%d-%m-%Y", "%Y-%m-%d", "%d %m %Y", "%d.%m.%Y",
+    "%d/%b/%Y", "%d-%b-%Y", "%d %b %Y", "%d-%B-%Y", "%d/%B/%Y", "%d %B %Y",
+)
+
+
+def _parse_printed_date(value: str):
+    """Parse a printed date, or return None if it is not a real date."""
+    v = str(value or "").strip()
+    for fmt in _DATE_FORMATS:
+        try:
+            return datetime.strptime(v.upper(), fmt).date()
+        except ValueError:
+            continue
+    return None
+
+
+def is_credible_document_date(value: str) -> bool:
+    """False for OCR-garbled strings that are NOT plausible calendar dates.
+
+    Live case (2026-09-28): the CDC booklet's OCR produced "07-BSF-92" for
+    the date of birth. It is parseable as nothing real, yet it looks
+    date-like, so it passed every placeholder check and was submitted to the
+    live esamudra registry. A credential that cannot be a calendar date is
+    not a credential — submitting it can only produce a wrong answer.
+    """
+    return _parse_printed_date(value) is not None
+
+
+def credible_credentials(credentials: Dict[str, Any]) -> Dict[str, Any]:
+    """Drop OCR-garbage identity values before they reach a live registry.
+
+    Rules (deliberately narrow — real credentials must survive):
+    - ``date_of_birth`` must parse as a real calendar date. "07-BSF-92" is
+      not one; no registry will match it, and submitting it converts a
+      missing-credential refusal into a false not-found.
+    - A parseable ``date_of_birth`` must PREDATE a parseable ``issue_date``:
+      the booklet's OCR also produced DOB "22/11/2020" alongside issue date
+      "22/01/2020" — an impossible timeline that can only be OCR damage.
+    - Other keys pass through untouched (document numbers can legitimately
+      contain letters; name spellings vary).
+
+    Anything dropped is absent from the result, so the engine's normal
+    missing-required-input refusal (or folder-mode cross-document
+    resolution) handles it — exactly the behavior a truly missing value
+    would get.
+    """
+    creds = dict(credentials or {})
+
+    # Empty values are not credentials at all — drop them so callers can
+    # treat the output as "credible values only".
+    for key in [k for k, v in creds.items() if not str(v or "").strip()]:
+        creds.pop(key)
+
+    dob_raw = str(creds.get("date_of_birth", "") or "").strip()
+    if dob_raw:
+        dob = _parse_printed_date(dob_raw)
+        if dob is None:
+            creds.pop("date_of_birth", None)
+        else:
+            issue = _parse_printed_date(str(creds.get("issue_date", "") or ""))
+            if issue is not None and dob >= issue:
+                creds.pop("date_of_birth", None)
+    return creds
 
 
 def is_placeholder_value(value: str) -> bool:

@@ -29,7 +29,11 @@ class TestLookup(unittest.TestCase):
             "issuing_country": "INDIA",
             "document_type": "Seafarers' Identity Document (SID)",
         })
-        self.assertEqual(results, [])
+        # The system MAY remember a dedicated SID source (e.g. the pipeline
+        # confirmed dgshippingbsid.in in the field); what must NEVER happen
+        # is the SID routing to the INDOS-tagged source.
+        for row in results:
+            self.assertNotIn("indos", row["url"].lower())
 
     def test_indos_matches_india_source(self):
         results = lookup_source({
@@ -67,7 +71,11 @@ class TestLookup(unittest.TestCase):
             "document_type": "Seafarers' Identity Document (SID)",
             "document_type_key": "INDOS_CERTIFICATE",
         })
-        self.assertEqual(results, [])
+        # Same property as above: a bogus/LLM-supplied key must not route
+        # the SID to the INDOS source. A remembered dedicated SID source is
+        # legitimate and may appear.
+        for row in results:
+            self.assertNotIn("indos", row["url"].lower())
 
 if __name__ == "__main__":
     unittest.main()

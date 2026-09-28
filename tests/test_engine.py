@@ -6,6 +6,8 @@ Tests cover every branch in ValidationEngine.validate():
   1. Active method found in registry → executed directly
   2. No active method + DB source → generate → validate → execute
   3. No active method + no DB source + discovery enabled → discovery → generate → execute
+  3b. DB-source generation refuses → fall through to discovery → generate → execute
+  3c. DB-source generation refuses + discovery finds nothing → refusal preserved
   4. No source anywhere → VALIDATION_UNAVAILABLE
   5. Active method execution → TECHNICAL_FAILURE preserved
   6. Generated method fails validation → VALIDATION_UNAVAILABLE
@@ -171,6 +173,93 @@ class TestValidationEngine(unittest.TestCase):
 
             self.assertEqual(decision.decision_status, DecisionStatus.VERIFIED)
             mock_gen.assert_called_once()
+        finally:
+            if os.path.exists(db_path):
+                os.remove(db_path)
+
+    # 3b. DB-source generation refuses → fall through to discovery ----------
+
+    @patch("engine.validation_engine.remember_source")
+    @patch("engine.validation_engine.lookup_source")
+    @patch("engine.validation_engine.generate_candidate_method")
+    def test_generation_failure_falls_through_to_discovery(self, mock_gen, mock_lookup, mock_remember):
+        """A generation refusal off a DB source retries via discovery.
+
+        Live case: the Indian SID's only DB source was esamudra (tagged
+        IN_CDC/IN_INDOS); the evidence gate refused an SID method there, and
+        only discovery — seeded from the document's printed domain — could
+        find the SID verifier. The old code returned the refusal immediately.
+        """
+        db_path = "test_engine_3b.db"
+        try:
+            registry = MethodRegistry(db_path=db_path)
+            runner = _mock_runner("VERIFIED")
+
+            mock_lookup.return_value = [
+                {"url": "https://unrelated.example.com", "country": "India"}
+            ]
+            candidate = _active_method("M_DISC_SID")
+            candidate.status = MethodStatus.TESTING
+            # First generation (from the DB source) refuses; the second
+            # (from the discovered source) succeeds.
+            mock_gen.side_effect = [
+                Exception("Source page has no workflow option or API-path evidence"),
+                candidate,
+            ]
+
+            engine = ValidationEngine(
+                registry=registry, runner=runner, enable_discovery=True
+            )
+            engine.validator = _mock_validator(ValidationReportStatus.PASSED)
+
+            mock_discovery_result = {
+                "result": {"url": "https://sid-portal.example.com/verify"},
+            }
+            with patch(
+                "engine.validation_engine.run_discovery", return_value=mock_discovery_result
+            ) as mock_disc:
+                decision = engine.validate(_profile("India", "SID"))
+
+            self.assertEqual(decision.decision_status, DecisionStatus.VERIFIED)
+            self.assertEqual(mock_gen.call_count, 2)
+            mock_disc.assert_called_once()
+        finally:
+            if os.path.exists(db_path):
+                os.remove(db_path)
+
+    # 3c. DB-source generation refuses + discovery finds nothing -------------
+
+    @patch("engine.validation_engine.remember_source")
+    @patch("engine.validation_engine.lookup_source")
+    @patch("engine.validation_engine.generate_candidate_method")
+    def test_generation_failure_preserved_when_discovery_finds_nothing(self, mock_gen, mock_lookup, mock_remember):
+        db_path = "test_engine_3c.db"
+        try:
+            registry = MethodRegistry(db_path=db_path)
+            runner = _mock_runner("VERIFIED")
+
+            mock_lookup.return_value = [
+                {"url": "https://unrelated.example.com", "country": "India"}
+            ]
+            mock_gen.side_effect = Exception(
+                "Source page has no workflow option or API-path evidence"
+            )
+
+            engine = ValidationEngine(
+                registry=registry, runner=runner, enable_discovery=True
+            )
+            engine.validator = _mock_validator(ValidationReportStatus.PASSED)
+
+            with patch(
+                "engine.validation_engine.run_discovery",
+                return_value={"result": {}},
+            ):
+                decision = engine.validate(_profile("India", "SID"))
+
+            # The specific generation refusal is the more informative cause —
+            # it must not be replaced by a generic "no source" unavailable.
+            self.assertEqual(decision.decision_status, DecisionStatus.TECHNICAL_FAILURE)
+            self.assertIn("no workflow option", decision.failure_reason)
         finally:
             if os.path.exists(db_path):
                 os.remove(db_path)

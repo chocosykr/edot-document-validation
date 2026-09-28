@@ -3,12 +3,20 @@ import json
 import logging
 import os
 import tempfile
+import time
 
 import requests
 
 from config import OCR_API_URL
 
 logger = logging.getLogger(__name__)
+
+# The LAN OCR service intermittently answers HTTP 200 with pages=[] for a
+# perfectly readable page (observed live, September 2026: the same PNG of
+# the ANUP CDC booklet's identity page returned 1 page, then 0 pages, then
+# 1 page on consecutive attempts). Silent-empty responses are therefore
+# retried instead of trusted. Attempts per page are env-overridable.
+_PAGE_RETRY_BACKOFF_SECONDS = 2
 
 # OCR cache: raw OCR responses are pure functions of the FILE BYTES, so they
 # are cached on disk keyed by the file's SHA-256. Extraction (the LLM step)
@@ -108,30 +116,52 @@ def extract_document(file_path: str) -> dict:
     combined_pages = []
     first_page_meta = {}
 
+    empty_pages: list[int] = []
+
     for i, img in enumerate(images):
+        page_attempts = max(1, int(os.environ.get("OCR_PAGE_ATTEMPTS", "3")))
         with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as tmp:
             tmp_path = tmp.name
         try:
             img.save(tmp_path, "PNG")
-            with open(tmp_path, "rb") as f:
-                filename = f"page_{i+1}.png"
-                res = requests.post(
-                    OCR_API_URL,
-                    files={"file": (filename, f, "image/png")},
-                    timeout=120
+            for attempt in range(1, page_attempts + 1):
+                with open(tmp_path, "rb") as f:
+                    filename = f"page_{i+1}.png"
+                    res = requests.post(
+                        OCR_API_URL,
+                        files={"file": (filename, f, "image/png")},
+                        timeout=120
+                    )
+                    res.raise_for_status()
+                    data = res.json()
+                if data.get("pages"):
+                    break
+                if attempt < page_attempts:
+                    logger.warning(
+                        "Page %d OCR returned 0 pages (attempt %d/%d); retrying",
+                        i + 1, attempt, page_attempts,
+                    )
+                    time.sleep(_PAGE_RETRY_BACKOFF_SECONDS * attempt)
+
+            if not first_page_meta:
+                first_page_meta = {
+                    "mode": data.get("mode", "structured"),
+                    "image_quality": data.get("image_quality", {}),
+                }
+            for page in data.get("pages", []):
+                page["page_number"] = i + 1
+                if "data" in page and isinstance(page["data"], dict):
+                    page["data"]["page_number"] = i + 1
+                combined_pages.append(page)
+
+            if not data.get("pages"):
+                empty_pages.append(i + 1)
+                logger.error(
+                    "Page %d/%d OCR returned 0 pages after %d attempts; "
+                    "continuing without it",
+                    i + 1, len(images), page_attempts,
                 )
-                res.raise_for_status()
-                data = res.json()
-                if not first_page_meta:
-                    first_page_meta = {
-                        "mode": data.get("mode", "structured"),
-                        "image_quality": data.get("image_quality", {}),
-                    }
-                for page in data.get("pages", []):
-                    page["page_number"] = i + 1
-                    if "data" in page and isinstance(page["data"], dict):
-                        page["data"]["page_number"] = i + 1
-                    combined_pages.append(page)
+            else:
                 logger.info(f"  Page {i+1}/{len(images)} OCR completed")
         finally:
             if os.path.exists(tmp_path):
@@ -144,5 +174,19 @@ def extract_document(file_path: str) -> dict:
         "image_quality": first_page_meta.get("image_quality", {}),
         "pages": combined_pages,
     }
+
+    if empty_pages:
+        # A run that silently lost pages must NOT be cached: the cache is
+        # keyed by the FILE hash, so a poisoned entry would replay the
+        # missing pages on every future run of the same document. Skip the
+        # cache write; the next run re-OCRs and gets a fresh chance at the
+        # flaky pages.
+        logger.warning(
+            "Skipping OCR cache write for %s: pages %s came back empty "
+            "(transient service issue); the next run will re-OCR them",
+            os.path.basename(file_path), empty_pages,
+        )
+        return result
+
     _cache_put(file_hash, result)
     return result

@@ -24,10 +24,27 @@ from rapidfuzz.fuzz import ratio
 from execution.models import ExecutionDecisionStatus, ExecutionResult
 
 
-_ERROR_MARKERS = (
-    "could not find", "not found", "no record", "no match", "unable to process",
-    "invalid", "error", "exception", "sorry",
+# Two classes of marker, deliberately separated (live case, 2026-09-28):
+# esamudra answered a valid CDC lookup with "Sorry ! Unable to process your
+# request,please try later" — a TRANSIENT SERVICE ERROR — and the shared
+# marker list classified it as a definitive REJECTED (INVALID, HIGH
+# confidence). That is the most dangerous wrong answer the system can emit.
+# A service failure must degrade to TECHNICAL_FAILURE (retried upstream,
+# never a verdict). Only genuine not-found phrasing may reject.
+_SERVICE_ERROR_MARKERS = (
+    "please try later", "please try again", "try again later",
+    "unable to process", "service unavailable", "temporarily unavailable",
+    "internal server error", "server error", "object reference not set",
+    "exception", "an error occurred", "error occurred",
 )
+_NOT_FOUND_MARKERS = (
+    "could not find", "could not find the match", "not found", "no record",
+    "no match", "no records found", "details not available",
+    "does not exist",
+)
+# Kept for backward-compatible callers; the combined set is only used where a
+# single "this body is not a record" check is needed.
+_ERROR_MARKERS = _SERVICE_ERROR_MARKERS + _NOT_FOUND_MARKERS
 STRONG_MATCH_THRESHOLD = 90
 AMBIGUOUS_MATCH_THRESHOLD = 55
 
@@ -258,12 +275,24 @@ def compare_response(
                 "error": "Empty response body from verification endpoint.",
             })
 
-        # Check for error markers in the response text
+        # Check for error markers in the response text.
+        # SERVICE errors take precedence over not-found markers: a portal
+        # mid-outage must never produce a definitive INVALID verdict.
         resp_text = _clean(json.dumps(parsed) if parsed else response)
-        if any(marker in resp_text for marker in _ERROR_MARKERS):
+        if any(marker in resp_text for marker in _SERVICE_ERROR_MARKERS):
+            return result.model_copy(update={
+                "decision_status": ExecutionDecisionStatus.TECHNICAL_FAILURE,
+                "evidence": {**result.evidence, "comparison": "service_error_in_response"},
+                "error": (
+                    "Verification endpoint returned a service-error message "
+                    "(not a record lookup result); refusing to classify as "
+                    "REJECTED."
+                ),
+            })
+        if any(marker in resp_text for marker in _NOT_FOUND_MARKERS):
             return result.model_copy(update={
                 "decision_status": ExecutionDecisionStatus.REJECTED,
-                "evidence": {**result.evidence, "comparison": "error_marker_in_response"},
+                "evidence": {**result.evidence, "comparison": "not_found_marker_in_response"},
             })
 
         comparison = _compare_with_discovered_mapping(response, raw_profile, field_mapping)
@@ -341,16 +370,37 @@ def compare_response(
     reference = _reference_fields(raw_profile)
     haystack = " ".join(extracted.values()) or _response_text(response)
 
-    if not response or not haystack or any(marker in haystack for marker in _ERROR_MARKERS):
-        status = (
-            ExecutionDecisionStatus.TECHNICAL_FAILURE
-            if not response
-            else ExecutionDecisionStatus.REJECTED
-        )
+    # Legacy fallback path (no discovered mapping): mirror the same
+    # service-error vs not-found split — a transient portal outage must
+    # degrade to TECHNICAL_FAILURE, never to a definitive INVALID.
+    if not response:
+        status = ExecutionDecisionStatus.TECHNICAL_FAILURE
+    elif any(marker in haystack for marker in _SERVICE_ERROR_MARKERS):
+        status = ExecutionDecisionStatus.TECHNICAL_FAILURE
+    elif any(marker in haystack for marker in _NOT_FOUND_MARKERS):
+        status = ExecutionDecisionStatus.REJECTED
+    else:
+        status = None
+    if status is not None:
         return result.model_copy(update={
             "decision_status": status,
-            "evidence": {**result.evidence, "comparison": "empty_or_error", "extracted_fields": extracted},
-            "error": "Empty response body from verification endpoint." if not response else result.error,
+            "evidence": {
+                **result.evidence,
+                "comparison": (
+                    "empty_response" if not response
+                    else "service_error_in_response"
+                    if status == ExecutionDecisionStatus.TECHNICAL_FAILURE
+                    else "not_found_marker_in_response"
+                ),
+                "extracted_fields": extracted,
+            },
+            "error": (
+                "Empty response body from verification endpoint." if not response
+                else "Verification endpoint returned a service-error message "
+                "(not a record lookup result); refusing to classify as REJECTED."
+                if status == ExecutionDecisionStatus.TECHNICAL_FAILURE
+                else result.error
+            ),
         })
 
     # A non-empty body that yields NO parseable record fields and is tiny
