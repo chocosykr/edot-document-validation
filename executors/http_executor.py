@@ -244,6 +244,14 @@ _BODY_SERVICE_ERROR_MARKERS = (
     "please try later", "please try again", "try again later",
     "service unavailable", "temporarily unavailable",
     "internal server error", "object reference not set",
+    # dmamyanmar.org answers a VALID lookup with the 19-byte string
+    # "VerificationError" often enough that it must be retried (live:
+    # the same CDC+serial+passport combo returned a full record, then
+    # "VerificationError", then a full record again). A genuinely wrong
+    # lookup simply retries to the same string; the host-side classifier
+    # then degrades it to TECHNICAL_FAILURE via the tiny-response guard —
+    # never a definitive REJECTED from one ambiguous byte-string.
+    "verificationerror",
 )
 
 
