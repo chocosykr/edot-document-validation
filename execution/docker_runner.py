@@ -210,6 +210,16 @@ class DockerMethodRunner:
 
             shutil.copy2(executor_script_path, script_dest)
 
+            # Split HTTP-executor modules: copy them flat next to executor.py
+            # so the sandbox can import them by plain module name (the
+            # executor falls back to non-package imports inside Docker).
+            # Only shipped when the HTTP executor is the one being run.
+            if os.path.basename(executor_script_path) == "http_executor.py":
+                for module_name in ("http_helpers.py", "http_decider.py"):
+                    module_src = os.path.join(_EXECUTORS_DIR, module_name)
+                    if os.path.exists(module_src):
+                        shutil.copy2(module_src, os.path.join(temp_dir, module_name))
+
             # The BROWSER executor resolves its model through the shared
             # local/frontier toggle. Copy the shared module next to the
             # executor so the sandbox calls the same function rather than

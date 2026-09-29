@@ -110,8 +110,8 @@ class TestDiffExtraction(unittest.TestCase):
 class TestDiscriminatorDiscovery(unittest.TestCase):
     """Seed-credential probe via difflib; REJECTED-only without real inputs."""
 
-    @patch("generation.generator._fetch_idle_text", return_value="")
-    @patch("generation.generator._probe_endpoint")
+    @patch("generation.discriminators._fetch_idle_text", return_value="")
+    @patch("generation.discriminators._probe_endpoint")
     def test_no_credential_means_rejected_only_or_nothing(self, mock_probe, _mock_idle):
         mock_probe.return_value = FAKE_HTML
 
@@ -128,8 +128,8 @@ class TestDiscriminatorDiscovery(unittest.TestCase):
         self.assertEqual(result["success_keywords"], [])
         self.assertIn(result["failure_keywords"], ([], [REJECTION_MARKER]))
 
-    @patch("generation.generator._fetch_idle_text", return_value="")
-    @patch("generation.generator._probe_endpoint")
+    @patch("generation.discriminators._fetch_idle_text", return_value="")
+    @patch("generation.discriminators._probe_endpoint")
     def test_seed_credential_confirms_both_markers(self, mock_probe, _mock_idle):
         mock_probe.side_effect = [FAKE_HTML, REAL_HTML]
 
@@ -161,8 +161,8 @@ class TestDiscriminatorDiscovery(unittest.TestCase):
             },
         )
 
-    @patch("generation.generator._fetch_idle_text", return_value="")
-    @patch("generation.generator._probe_endpoint")
+    @patch("generation.discriminators._fetch_idle_text", return_value="")
+    @patch("generation.discriminators._probe_endpoint")
     def test_probe_failure_yields_no_markers(self, mock_probe, _mock_idle):
         mock_probe.return_value = None
         result = _discover_discriminators(
@@ -175,8 +175,8 @@ class TestDiscriminatorDiscovery(unittest.TestCase):
             result, {"success_keywords": [], "failure_keywords": []}
         )
 
-    @patch("generation.generator._fetch_idle_text", return_value="")
-    @patch("generation.generator._probe_endpoint")
+    @patch("generation.discriminators._fetch_idle_text", return_value="")
+    @patch("generation.discriminators._probe_endpoint")
     def test_provider_exception_does_not_crash(self, mock_probe, _mock_idle):
         mock_probe.return_value = FAKE_HTML
 
@@ -192,8 +192,8 @@ class TestDiscriminatorDiscovery(unittest.TestCase):
         )
         self.assertEqual(result["success_keywords"], [])
 
-    @patch("generation.generator._fetch_idle_text", return_value="")
-    @patch("generation.generator._probe_endpoint")
+    @patch("generation.discriminators._fetch_idle_text", return_value="")
+    @patch("generation.discriminators._probe_endpoint")
     def test_credential_without_document_number_is_ignored(self, mock_probe, _mock_idle):
         """A provider result without a document number is not a usable seed."""
         mock_probe.return_value = FAKE_HTML
@@ -277,9 +277,9 @@ class TestNarrowPathLimitation(unittest.TestCase):
                 "required_inputs": ["document_number", "date_of_birth"],
             },
         ), patch(
-            "generation.generator._fetch_idle_text", return_value=""
+            "generation.discriminators._fetch_idle_text", return_value=""
         ), patch(
-            "generation.generator._probe_endpoint", return_value=FAKE_HTML
+            "generation.discriminators._probe_endpoint", return_value=FAKE_HTML
         ) as mock_probe:
             method = generate_candidate_method(
                 {"document_type": "INDOS", "issuing_country": "India"},

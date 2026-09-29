@@ -24,6 +24,63 @@ A few terms used throughout:
 - **Registry** — here, a government website where a credential can be
   checked against official records.
 
+### Module map (file layout)
+
+The codebase is deliberately split into small, single-purpose modules:
+entry points and orchestrators stay thin, and each pipeline stage owns its
+own package. When you touch a stage, edit its module — not the orchestrator.
+
+| Package / file | Role |
+|---|---|
+| `main.py` | CLI entry point: single document, `--folder` person mode |
+| `mcp_server/server.py` | MCP server entry point (external tool door) |
+| `ocr/client.py` | OCR API upload |
+| `ocr/extractor.py` | LLM extraction, classification, redaction |
+| `registry/models.py` | `ValidationMethod` model and status lifecycle |
+| `registry/repository.py` | SQLite method registry |
+| `registry/document_types.py` | Canonical document-type keys |
+| `db/lookup.py` | Fail-closed source lookup |
+| `discovery/agent.py` | Discovery **orchestrator**: the iterative search → fetch → judge → follow loop |
+| `discovery/llm.py` | Discovery LLM calls (rate-limit retry), prompt loading, JSON parsing |
+| `discovery/search.py` | LLM query generation + Tavily search |
+| `discovery/page_fetch.py` | Candidate page fetch + shared JS endpoint harvest |
+| `discovery/judge.py` | Deterministic pre-checks (login wall/error/country mismatch) + model judgment |
+| `discovery/crawl_queue.py` | Document-carried URL hints, queue enqueue/skip management |
+| `engine/validation_engine.py` | Per-document orchestration (Steps 4–9) |
+| `generation/generator.py` | Generation **orchestrator**: narrow path + full-LLM fallback, method assembly |
+| `generation/page_fetch.py` | Source-page fetch + structure summary for the LLM |
+| `generation/xhr_contract.py` | Component 1: deterministic XHR contract extraction from inline JS |
+| `generation/bundle_contract.py` | Component 1b: same extraction over SPA bundles |
+| `generation/param_mapping.py` | Component 3: narrow LLM mapping, workflow-param pinning, dispatch-selector detection |
+| `generation/discriminators.py` | Component 2: known-fake probe + difflib marker extraction |
+| `generation/post_process.py` | Deterministic post-generation enforcement (finalization) |
+| `execution/docker_runner.py` | Docker sandbox runner; ships executor modules into the container |
+| `execution/safety.py` | Input guarding, contact-only synthesis, structural test values |
+| `executors/http_executor.py` | HTTP **step runner**: captcha round, GET_HTML/EXTRACT, REQUEST loop, `main()` |
+| `executors/http_helpers.py` | HTTP verbs, session/cookies, retry, response compaction, substitution, captcha fetch |
+| `executors/http_decider.py` | Response classification: `decide()`, learned not-found signatures |
+| `executors/form_executor.py` | WEB_FORM method runner |
+| `executors/qr_url_executor.py` | QR_URL method runner |
+| `executors/browser_executor.py` | BROWSER method runner (Playwright) |
+| `validation/validator.py` | Structural validation loop + confirmed not-found signature capture |
+| `validation/healing.py` | Healing ladder: direct LLM rewrite + agentic tool-use loop |
+| `validation/field_comparison.py` | Field-match verification (beats keyword guessing) |
+| `validation/response_mapping.py` | LLM-discovered response field mapping |
+| `utils/llm_client.py` | Shared LLM config + JSON/vision calls (local/frontier toggle) |
+| `utils/js_intel.py` | Endpoint/call harvesting from external JS bundles |
+
+Import conventions that keep this working:
+
+- Split modules are re-exported from their orchestrator
+  (`generation/generator.py` re-exports `_extract_xhr_contract`,
+  `_discover_discriminators`, …) so existing callers and tests keep working.
+- The Docker sandbox receives only flat files (no package tree):
+  `execution/docker_runner.py` copies the executor plus its split modules
+  (`http_helpers.py`, `http_decider.py`, `llm_client.py`) next to
+  `executor.py`, and the executors fall back to plain module-name imports
+  there (`try: from executors.http_helpers import … / except ImportError:
+  from http_helpers import …`).
+
 ---
 
 ## 2. The life of one document
@@ -140,8 +197,10 @@ which tries three things in order:
 ### Step 6 — Method generation
 
 `generation/generator.py::generate_candidate_method()` builds the "recipe."
-It first fetches the registry's web page (`_fetch_page_structure`) and tries
-the **deterministic XHR extractor** (`_extract_xhr_contract`): a plain-regex
+It first fetches the registry's web page
+(`generation/page_fetch.py::_fetch_page_structure`) and tries the
+**deterministic XHR extractor**
+(`generation/xhr_contract.py::_extract_xhr_contract`): a plain-regex
 scanner (no LLM involved) that reads the page's inline JavaScript and pulls
 out the real request the page makes behind the scenes — endpoint URL, HTTP
 verb, whether parameters go on the query string or in a body, and the
@@ -168,7 +227,8 @@ Parameters are then classified three ways, not two:
   naive classification would call it dynamic), but operationally a fixed
   choice the system always makes the same way (e.g. `searchType`, which a
   human would pick from a dropdown; the value is inferred from the page's own
-  `<option>` entries by `_infer_workflow_params`).
+  `<option>` entries by
+  `generation/param_mapping.py::_infer_workflow_params`).
 
 Why the third category exists: in the SID incident, `searchType` was mapped
 to the document's type text and sent to a field expecting `Indos`, producing
@@ -184,7 +244,9 @@ fresh container per execution, read-only root filesystem, `--tmpfs /tmp`,
 memory capped at 256 MB, CPU at 0.5, and networking disabled entirely unless
 the method needs to reach a registry. The per-type executor scripts in
 `executors/` do the actual HTTP work — for HTTP methods,
-`executors/http_executor.py` performs the request, including the
+`executors/http_executor.py` (step runner) drives the request through
+`http_helpers.py` (verbs/retry) and `http_decider.py` (classification),
+including the
 POST-with-empty-body pattern (`http_post_query`) that the Indian servlet
 requires (the verb must stay POST; substituting a GET was explicitly
 rejected because only what was live-tested is implemented).
@@ -364,8 +426,13 @@ Two known gaps remain on this path (deliberate, listed in §6):
   main engine re-classifies responses with `compare_response` before
   deciding (`_execute_and_decide`); the MCP tool calls `_build_decision`
   directly and never runs comparison. For a `field_match` method the
-  executor always emits `UNCERTAIN` (`executors/http_executor.py::decide`
-  returns `UNCERTAIN` whenever `comparison_mode == "field_match"`), so an
+  executor has no field context to compare
+  (`executors/http_decider.py::decide` returns `UNCERTAIN` for a
+  `field_match` method that carries discovered `text_mappings`; a
+  mapping-less method falls through to its declared keywords — that
+  keyword channel was added 2026-09-28 so a structural probe gets a
+  definitive REJECTED the validator can capture as a learned not-found
+  signature), so an
   MCP execution can never produce `VERIFIED` or `REJECTED` — it returns
   `UNCERTAIN` / `UNKNOWN` with `evidence_quality: HIGH` for an HTTP method.
   Conveniently, this also means an MCP live test can never *falsely*
@@ -461,7 +528,7 @@ document-sourced (like the DMA portal's ReplyEmail).
   `init_db.py` (source database, `verification_sources.db`).
 - **LLM:** one external OpenAI-compatible endpoint (`LLM_URL` =
   `ai.edot-solutions.com` in this deployment's `.env`), called by
-  `utils/llm_client.py::generate_json` and `discovery/agent.py::call_llm`.
+  `utils/llm_client.py::generate_json` and `discovery/llm.py::call_llm`.
   A Gemini→Groq fallback chain was removed from `utils/llm_client.py` — there
   is exactly one provider. The model used at that endpoint is selected by the
   `LLM_MODEL` toggle (`get_llm_config`), currently `AI_Local` in `.env`. Tavily is used for discovery search
@@ -477,7 +544,7 @@ document-sourced (like the DMA portal's ReplyEmail).
   in-memory/printed decision JSON. Nothing at rest is encrypted (the former
   Fernet seed store was removed — see §6 item 7).
 - **Matchers:** RapidFuzz + `difflib` (`validation/field_comparison.py`,
-  `generation/generator.py`).
+  `generation/discriminators.py`).
 - **MCP server:** `mcp_server/server.py` exposes `list_active_methods` and
   `validate_document` over stdio (see the alternate-entry-point note in §2 —
   including its caveats).
@@ -485,6 +552,9 @@ document-sourced (like the DMA portal's ReplyEmail).
   agent (`create_react_agent`) against the MCP tools over stdio, launched
   from `main.py`'s technical-failure prompt; the langchain/langgraph stack
   is pinned in `requirements.txt`.
+- **Agentic healing:** `validation/healing.py` runs the same LangGraph
+  ReAct agent (`create_react_agent`) as a validation-time self-repair pass
+  for failed structural tests (§7.3), behind `DVS_AGENTIC_HEALING`.
 - **Test suite:** 204 tests under `tests/` (unittest), currently passing.
 
 ### Planned, not yet implemented (verified absent from code)
@@ -523,7 +593,7 @@ document-sourced (like the DMA portal's ReplyEmail).
   every page load. Self-healing couldn't fix it because retry feedback
   carried no response body — the LLM could only reshuffle guesses.
 - **Fix:** the deterministic XHR extractor
-  (`generation/generator.py::_extract_xhr_contract`) reads the real request
+  (`generation/xhr_contract.py::_extract_xhr_contract`) reads the real request
   shape out of the page's JavaScript; the three-way parameter
   classification keeps the LLM away from everything except dynamic-field
   mapping; verification was replaced by field comparison against the
@@ -579,9 +649,10 @@ configured external endpoint and no further fallbacks.
 probe is orphaned.**
 Verified in code: the narrow (extractor-succeeded) path of
 `generation/generator.py::generate_candidate_method` does **not** call
-`_discover_discriminators` — the `seed_provider` argument is accepted but
-unused there, and the only production caller of the probe is the manual CLI
-`engine/upgrade_method.py` — since deleted; the probe currently has no
+`_discover_discriminators` (`generation/discriminators.py` — re-exported
+through `generation.generator`, but the orchestrator never invokes it)
+— the only caller would be an onboarding CLI that was deleted
+(`engine/upgrade_method.py`); the probe currently has no
 production caller at all, only unit tests). Meanwhile, for `field_match` methods the
 validator runs `compare_response(exec_result, tc.inputs)`
 (`validation/validator.py::_run_test_case`) — comparing the response to the
@@ -809,7 +880,7 @@ run.
      and the sanitized not-found-signature path, and no encrypted
      credential store exists anymore. Consequence to remember: the
      two-sided fake-vs-real discriminator probe
-     (`generation/generator.py::_discover_discriminators`) is retained but
+     (`generation/discriminators.py::_discover_discriminators`) is retained but
      has **no production caller**; re-introduce a caller — or delete the
      function — the next time a registry needs confirmed success/failure
      markers.
@@ -847,7 +918,8 @@ this constraint was held throughout.
 
 ### 7.2 Executor resilience against environmental noise
 
-`executors/http_executor.py`:
+`executors/http_executor.py` (step runner; helpers in `http_helpers.py`,
+classification in `http_decider.py`):
 
 - **Transient-error retries** around every request helper (DNS blips,
   `No route to host`, connection resets, 5xx) with jittered backoff. One
@@ -864,7 +936,8 @@ this constraint was held throughout.
 
 ### 7.3 Structural-test healing (deterministic first, LLM second)
 
-`validation/validator.py`:
+`validation/validator.py` (attempt loop, signature capture) and
+`validation/healing.py` (LLM passes):
 
 - **Confirmed not-found signature capture**: the structural probe submits a
   known-fake value, so the site's deterministic refusal of it IS the site's
@@ -890,7 +963,8 @@ this constraint was held throughout.
 
 ### 7.4 Generator: code enforces what the LLM only proposes
 
-`generation/generator.py` (post-generation enforcement, deterministic):
+`generation/post_process.py` (post-generation enforcement, deterministic;
+invoked by `generation/generator.py::_finalize_method`):
 
 - **BROWSER methods rejected outright** — the browser executor is a stub;
   the model had begun emitting BROWSER as an escape hatch.
@@ -970,3 +1044,44 @@ independently self-generated and promoted to ACTIVE during folder runs
 final code paths — the AIO run above is the evidence).
 
 Test suite: 206 tests, all passing, at every commit in this series.
+
+### 7.8 Modularization pass (2026-09-28)
+
+The four largest working files were broken into small, single-purpose
+modules at existing section boundaries — a pure refactor: every function
+moved verbatim, behavior unchanged, all 228 tests passing without test-logic
+changes (only mock patch-targets moved with their functions).
+
+| Was | Now |
+|---|---|
+| `generation/generator.py` (1379 lines) | Orchestrator (~360) + `page_fetch.py` + `xhr_contract.py` + `param_mapping.py` + `discriminators.py` |
+| `validation/validator.py` (594 lines) | Attempt loop + signature capture (~340) + `validation/healing.py` (LLM rewrite pass + agentic tool-use loop) |
+| `executors/http_executor.py` (829 lines) | Step runner (~360) + `http_helpers.py` (HTTP verbs, retry, compaction, captcha fetch) + `http_decider.py` (`decide()`, not-found signatures) |
+| `discovery/agent.py` (838 lines) | Orchestrator (~295) + `llm.py` (chat + parsing) + `search.py` (queries + Tavily) + `page_fetch.py` (fetch + JS harvest) + `judge.py` (pre-checks + model judgment) + `crawl_queue.py` (hints + queue) |
+
+Constraints the split had to respect (they are part of the design now):
+
+- **Docker sandbox imports.** The runner copies flat files, not a package
+  tree, so `docker_runner.py` ships `http_helpers.py`/`http_decider.py`
+  next to the executor when the HTTP executor runs, and the executor uses
+  the dual import (`try: from executors.http_helpers import …` / `except
+  ImportError: from http_helpers import …`) — the same pattern the
+  browser executor already used for `llm_client`.
+- **Re-export facades.** `generation/generator.py` re-exports every moved
+  function, so `engine/`, the CLI, and unit tests import from one place.
+  Mock patch-targets in tests point at the module that now *owns* the
+  function (e.g. `generation.discriminators._probe_endpoint`), because
+  patching only works where the name is looked up, not where it is
+  re-exported.
+- **Related bug fixed in the same pass (2026-09-28):** a newly generated
+  `field_match` method's structural probe previously could never reach a
+  definitive verdict. Three gaps compounded: the generator's rebuilt
+  `expected_responses` silently dropped the model's declared
+  `success_keywords`/`failure_keywords`; `decide()` short-circuited to
+  `UNCERTAIN` for every `field_match` method regardless of keywords; and
+  the validator captured not-found signatures only on HTTP 4xx. With the
+  keywords preserved, the keyword channel reachable in `decide()`
+  (`executors/http_decider.py`), and signature capture extended to a
+  REJECTED keyword verdict on any status (e.g. DMA's HTTP 200 + 19-char
+  error body), the probe → capture → retest ladder completes and this
+  class of registries validates instead of dying UNHEALTHY.

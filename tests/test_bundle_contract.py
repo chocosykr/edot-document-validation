@@ -1,7 +1,7 @@
 """
 Unit tests for the deterministic bundle contract extractor
 (generation/bundle_contract.py) and the generalized doc-type workflow
-evidence guard (generation/generator.py::_doc_type_workflow_evidence).
+evidence guard (generation/param_mapping.py::_doc_type_workflow_evidence).
 
 The primary fixture mirrors the REAL shape observed on a React SPA that
 replaced a legacy JSP portal: an empty shell page, a 3.6 MB minified bundle,

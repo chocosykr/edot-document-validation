@@ -18,533 +18,64 @@ Flow (prototype-quality, but genuinely iterative):
      (never a crash, never a hallucinated method). Whatever source is accepted
      still goes through the engine's existing test-before-trust validation.
 
+Module layout (split for modularity):
+  llm.py         — chat calls + rate-limit retry, prompt loading, JSON parsing
+  search.py      — LLM query generation + Tavily search
+  page_fetch.py  — candidate page fetch + JS endpoint harvest
+  judge.py       — deterministic pre-checks + model page judgment
+  crawl_queue.py — document hint extraction + queue management
+  agent.py       — this orchestrator (the discovery loop)
+
 Every LLM call here resolves its model through the shared local/frontier
 toggle (utils.llm_client.get_llm_config) — no hardcoded model name.
 """
 
-import json
 import os
-import re
-import time
 from urllib.parse import urljoin, urlparse
 
-import requests
-from bs4 import BeautifulSoup
-
-from tavily import TavilyClient
-
-from config import TAVILY_API_KEY
-from utils.llm_client import get_llm_config
-from utils.js_intel import harvest_endpoints as _shared_harvest_endpoints
-
-
-# --------------------------------------------------
-# Configuration
-# --------------------------------------------------
-
-MAX_SEARCH_QUERIES = 8
-MAX_RESULTS_PER_QUERY = 5
-LLM_MAX_RETRIES = 3
-LLM_MIN_INTERVAL_SECONDS = 1.0
+# Split modules. Everything is re-exported here so existing callers
+# (engine.validation_engine imports run_discovery; tests import _hint_urls)
+# and tests that patch through discovery.agent keep working.
+from discovery.crawl_queue import (
+    _SKIP_HOST_MARKERS,
+    _enqueue,
+    _hint_urls,
+    _is_skippable,
+)
+from discovery.judge import (
+    _ERROR_MARKERS,
+    _LOGIN_MARKERS,
+    _REQUIRED_FIELD_SYNONYMS,
+    _deterministic_reject,
+    classify_page,
+)
+from discovery.llm import (
+    LLM_MAX_RETRIES,
+    LLM_MIN_INTERVAL_SECONDS,
+    call_llm,
+    load_prompt,
+    parse_json_array,
+    parse_json_response,
+)
+from discovery.page_fetch import (
+    MAX_LINKS_PER_PAGE,
+    MAX_PAGE_TEXT_CHARS,
+    PAGE_FETCH_TIMEOUT_SECONDS,
+    USER_AGENT,
+    _required_profile_fields,
+    fetch_page,
+    harvest_js_endpoints,
+)
+from discovery.search import (
+    MAX_RESULTS_PER_QUERY,
+    MAX_SEARCH_QUERIES,
+    generate_search_queries,
+    perform_searches,
+    tavily_client,
+)
 
 # --- Iterative-discovery budget (hard caps: no run-away loops/cost) ----------
 MAX_DISCOVERY_ATTEMPTS = int(os.getenv("DISCOVERY_MAX_ATTEMPTS", "10"))
-PAGE_FETCH_TIMEOUT_SECONDS = 20
-MAX_PAGE_TEXT_CHARS = 6000
-MAX_LINKS_PER_PAGE = 30
-
-# Design choice (prototype): a page is accepted only when the model returns
-# verdict=ACCEPT with confidence >= this threshold AND reports at least one of
-# the document's required lookup fields as present. Anything less is treated as
-# a rejection and the proposed next move is taken instead. Deliberately strict:
-# a false accept is worse than another attempt.
-PAGE_ACCEPT_CONFIDENCE = 60
-
-_REQUIRED_FIELD_SYNONYMS = {
-    "document_number": ("document number", "doc no", "docnumber", "sid", "bsid",
-                        "indos", "certificate no", "cert no", "number"),
-    "date_of_birth": ("date of birth", "dob", "birth date", "birthdate", "birth"),
-    "full_name": ("full name", "seafarer name", "holder name", "name"),
-}
-
-_LOGIN_MARKERS = (
-    "sign in", "log in", "login", "staff login", "authorized personnel",
-    "forgot password", "enter your password", "employee login",
-)
-_ERROR_MARKERS = (
-    "page not found", "not found", "404", "internal server error", "500",
-    "access denied", "403 forbidden", "service unavailable",
-)
-# Domains that are never a public registry lookup form: skipping them keeps the
-# limited attempt budget for real candidates (the model still judges everything
-# that is enqueued).
-_SKIP_HOST_MARKERS = (
-    "instagram.", "youtube.", "youtu.be", "facebook.", "linkedin.",
-    "twitter.", "//x.com", "tiktok.", "pinterest.", "reddit.",
-)
-
-USER_AGENT = (
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-    "(KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
-)
-
-last_llm_request_at = 0.0
-
-
-if not get_llm_config()["api_key"]:
-    raise ValueError(
-        "LLM_API_KEY is not set in .env"
-    )
-
-if not TAVILY_API_KEY:
-    raise ValueError(
-        "TAVILY_API_KEY is not set in .env"
-    )
-
-
-tavily_client = TavilyClient(
-    api_key=TAVILY_API_KEY
-)
-
-
-# --------------------------------------------------
-# Prompt loading
-# --------------------------------------------------
-
-def load_prompt(filename: str) -> str:
-    with open(
-        f"prompts/{filename}",
-        "r",
-        encoding="utf-8"
-    ) as file:
-        return file.read()
-
-
-# --------------------------------------------------
-# LLM API
-# --------------------------------------------------
-
-def call_llm(prompt: str) -> str:
-
-    global last_llm_request_at
-
-    # Shared toggle: endpoint is always LLM_URL; LLM_MODEL is the switch.
-    config = get_llm_config()
-    url = config["url"]
-    model = config["model"]
-    api_key = config["api_key"]
-
-    print(f"[discovery] LLM call using model={model!r}")
-
-    headers = {
-        "Authorization": f"Bearer {api_key}",
-        "Content-Type": "application/json"
-    }
-
-    payload = {
-        "model": model,
-        "messages": [
-            {
-                "role": "user",
-                "content": prompt
-            }
-        ],
-        "temperature": 0
-    }
-
-    for attempt in range(LLM_MAX_RETRIES + 1):
-
-        elapsed = time.monotonic() - last_llm_request_at
-        if elapsed < LLM_MIN_INTERVAL_SECONDS:
-            time.sleep(
-                LLM_MIN_INTERVAL_SECONDS - elapsed
-            )
-
-        response = requests.post(
-            url,
-            headers=headers,
-            json=payload,
-            timeout=120
-        )
-
-        last_llm_request_at = time.monotonic()
-
-        if response.status_code != 429:
-            break
-
-        if attempt == LLM_MAX_RETRIES:
-            response.raise_for_status()
-
-        retry_after = response.headers.get(
-            "Retry-After"
-        )
-
-        try:
-            delay = float(retry_after) if retry_after else 0
-        except (TypeError, ValueError):
-            delay = 2 ** (attempt + 1)
-
-        print(
-            f"LLM rate limit reached; retrying in "
-            f"{delay:.0f}s..."
-        )
-        time.sleep(delay)
-
-    response.raise_for_status()
-
-    result = response.json()
-
-    return result["choices"][0]["message"]["content"]
-
-
-# --------------------------------------------------
-# Generate search queries
-# --------------------------------------------------
-
-def generate_search_queries(
-    redacted_profile: dict
-) -> list[str]:
-
-    prompt = load_prompt(
-        "discovery_queries.txt"
-    )
-
-    prompt += "\n\n"
-
-    prompt += json.dumps(
-        redacted_profile,
-        ensure_ascii=False,
-        indent=2
-    )
-
-    print("\nGenerating search queries with LLM...")
-
-    content = call_llm(prompt)
-
-    return parse_json_array(content)[:MAX_SEARCH_QUERIES]
-
-
-# --------------------------------------------------
-# Tavily searches
-# --------------------------------------------------
-
-def perform_searches(
-    queries: list[str]
-) -> list[dict]:
-
-    search_results = []
-
-    for query in queries:
-
-        print(f"\nSearching: {query}")
-
-        try:
-
-            response = tavily_client.search(
-                query=query,
-                search_depth="advanced",
-                max_results=MAX_RESULTS_PER_QUERY,
-                include_answer=False
-            )
-
-            results = []
-
-            for result in response.get(
-                "results",
-                []
-            ):
-
-                results.append({
-                    "title": result.get("title"),
-                    "url": result.get("url"),
-                    "content": result.get(
-                        "content",
-                        ""
-                    ),
-                    "score": result.get("score")
-                })
-
-            search_results.append({
-                "query": query,
-                "results": results
-            })
-
-        except Exception as e:
-
-            print(f"Search failed: {e}")
-
-            search_results.append({
-                "query": query,
-                "results": [],
-                "error": str(e)
-            })
-
-    return search_results
-
-
-# --------------------------------------------------
-# Page fetching + relevance signals
-# --------------------------------------------------
-
-def _required_profile_fields(redacted_profile: dict) -> list[str]:
-    """Lookup fields the document itself carries (tokens count as presence)."""
-    fields = [
-        field for field in ("document_number", "date_of_birth", "full_name")
-        if redacted_profile.get(field)
-    ]
-    return fields or ["document_number"]
-
-
-def fetch_page(url: str) -> dict:
-    """Fetch a candidate page and extract the signals the judge needs."""
-    try:
-        response = requests.get(
-            url,
-            timeout=PAGE_FETCH_TIMEOUT_SECONDS,
-            headers={"User-Agent": USER_AGENT},
-            allow_redirects=True,
-        )
-    except Exception as e:
-        return {"url": url, "ok": False, "error": f"{type(e).__name__}: {e}"}
-
-    try:
-        soup = BeautifulSoup(response.text, "html.parser")
-    except Exception as e:
-        return {
-            "url": url, "ok": False, "status": response.status_code,
-            "error": f"unparsable HTML: {e}",
-        }
-
-    final_url = response.url or url
-    title = soup.title.get_text(" ", strip=True) if soup.title else ""
-    visible_text = " ".join(soup.get_text(" ", strip=True).split())
-
-    inputs = []
-    for el in soup.find_all(["input", "select", "textarea"]):
-        inputs.append({
-            "tag": el.name,
-            "type": (el.get("type") or "").lower(),
-            "name": el.get("name") or "",
-            "id": el.get("id") or "",
-            "placeholder": el.get("placeholder") or "",
-        })
-    has_password = any(i["type"] == "password" for i in inputs)
-
-    js_srcs = []
-    for script in soup.find_all("script"):
-        if script.get("src"):
-            js_srcs.append(script["src"])
-
-    host = urlparse(final_url).netloc
-    links = []
-    external_links = []
-    for anchor in soup.find_all("a", href=True):
-        candidate = urljoin(final_url, anchor["href"]).split("#")[0]
-        if not candidate.lower().startswith(("http://", "https://")):
-            continue
-        bucket = links if urlparse(candidate).netloc == host else external_links
-        if candidate not in bucket and len(bucket) < MAX_LINKS_PER_PAGE:
-            bucket.append(candidate)
-
-    return {
-        "url": final_url,
-        "requested_url": url,
-        "ok": response.ok,
-        "status": response.status_code,
-        "title": title,
-        "text": visible_text[:MAX_PAGE_TEXT_CHARS],
-        "inputs": inputs[:40],
-        "has_password": has_password,
-        "links": links,
-        "external_links": external_links,
-        "js_srcs": js_srcs,
-        "html_len": len(response.text),
-    }
-
-
-def harvest_js_endpoints(page_url: str, js_srcs: list[str]) -> list[str]:
-    """Harvest ranked endpoint-like strings from the page's JS bundles.
-
-    This is the 'inspect the page's own JS/network calls' move. The
-    implementation is SHARED with the generation pipeline
-    (utils/js_intel.harvest_endpoints) so generation reuses exactly the
-    inspection discovery already performs.
-    """
-    return _shared_harvest_endpoints(page_url, js_srcs)
-
-
-def _deterministic_reject(page: dict, redacted_profile: dict) -> str | None:
-    """Cheap pre-checks so obvious wrong pages never cost an LLM call."""
-    if not page.get("ok"):
-        status = page.get("status")
-        detail = page.get("error") or (f"HTTP {status}" if status else "unreachable")
-        return f"page could not be fetched ({detail})"
-
-    text = (page.get("text") or "").lower()
-    title = (page.get("title") or "").lower()
-    combined = f"{title} {text}"
-
-    required = _required_profile_fields(redacted_profile)
-    haystack = " ".join(
-        [
-            (i.get("name") or "") + " " + (i.get("id") or "") + " "
-            + (i.get("placeholder") or "")
-            for i in page.get("inputs") or []
-        ]
-    ).lower()
-    has_lookup_field = any(
-        any(syn in haystack for syn in _REQUIRED_FIELD_SYNONYMS[field])
-        for field in required
-    )
-
-    if any(marker in combined for marker in _ERROR_MARKERS) and not page.get("inputs"):
-        return "looks like an error/placeholder page (no form inputs)"
-
-    if len(text) < 40 and not page.get("inputs") and not page.get("links"):
-        return "blank or empty page (no text, inputs, or links)"
-
-    has_password = page.get("has_password")
-    if has_password is None:
-        has_password = any(
-            (i.get("type") or "").lower() == "password"
-            for i in page.get("inputs") or []
-        )
-    if has_password and not has_lookup_field:
-        return "login wall: password field present with no document lookup inputs"
-
-    login_hits = sum(1 for marker in _LOGIN_MARKERS if marker in combined)
-    if login_hits >= 2 and not page.get("inputs"):
-        return "login wall: login/staff sign-in text with no lookup inputs"
-
-    # --- Country-mismatch guard ---
-    # Reject pages that clearly belong to a different country than the
-    # document's issuing_country. This prevents the LLM from latching onto
-    # e.g. India's SID portal for a Myanmar document.
-    doc_country = (redacted_profile.get("issuing_country") or "").lower()
-    if doc_country:
-        page_url_low = (page.get("url") or "").lower()
-        # Known country → domain/TLD markers (extend as needed)
-        _COUNTRY_DOMAIN_MARKERS = {
-            "india": (".in/", ".gov.in", "dgshipping", "dgma.gov", "indos",
-                      "esamudra", "indianmaritimeuniversity"),
-            "myanmar": (".mm/", ".gov.mm", "dma.gov.mm"),
-            "philippines": (".ph/", ".gov.ph", "marina.gov"),
-            "indonesia": (".id/", ".go.id"),
-            "bangladesh": (".bd/", ".gov.bd"),
-            "pakistan": (".pk/", ".gov.pk"),
-            "sri lanka": (".lk/", ".gov.lk"),
-            "china": (".cn/", ".gov.cn"),
-        }
-        for country_name, markers in _COUNTRY_DOMAIN_MARKERS.items():
-            # If the page URL matches a known country's domain markers
-            # AND that country is NOT the document's country → reject.
-            if any(m in page_url_low for m in markers):
-                if country_name not in doc_country and doc_country not in country_name:
-                    return (
-                        f"country mismatch: page belongs to '{country_name}' "
-                        f"but document is from '{doc_country}'"
-                    )
-
-    return None
-
-
-def classify_page(
-    redacted_profile: dict,
-    page: dict,
-    endpoint_hints: list[str],
-    visited: list[dict],
-) -> dict:
-    """Model judgment: is this the right page, and if not, what next?"""
-    prompt = load_prompt("discovery_page_check.txt")
-
-    payload = {
-        "redacted_profile": redacted_profile,
-        "required_lookup_fields": _required_profile_fields(redacted_profile),
-        "candidate_page": {
-            "url": page.get("url"),
-            "title": page.get("title"),
-            "http_status": page.get("status"),
-            "text_excerpt": page.get("text"),
-            "inputs": page.get("inputs"),
-            "same_domain_links": page.get("links"),
-            "external_links": page.get("external_links"),
-        },
-        "js_endpoint_hints": endpoint_hints,
-        "already_visited": [v.get("url") for v in visited],
-    }
-
-    prompt += "\n\n" + json.dumps(payload, ensure_ascii=False, indent=2)
-
-    print(f"  Judging page: {page.get('title') or page.get('url')}")
-
-    content = call_llm(prompt)
-
-    return parse_json_response(content)
-
-
-# --------------------------------------------------
-# Iterative discovery loop
-# --------------------------------------------------
-
-def _is_skippable(url: str) -> bool:
-    low = url.lower()
-    return any(marker in low for marker in _SKIP_HOST_MARKERS)
-
-
-def _enqueue(results: list[dict], queue: list[str], seen: set, front: bool = False) -> None:
-    urls = []
-    for group in results:
-        for result in group.get("results", []) or []:
-            url = result.get("url")
-            if not url or url in seen or url in urls:
-                continue
-            if _is_skippable(url):
-                print(f"  skipping non-verification host: {url}")
-                continue
-            urls.append(url)
-    if front:
-        queue[:0] = urls
-    else:
-        queue.extend(urls)
-
-
-def _hint_urls(redacted_profile: dict) -> list[str]:
-    """    Verification-portal URLs the document ITSELF carries.
-
-    Extracted scans sometimes name the issuing authority's verification URL
-    (a QR target, a "verify at" footer, a portal link). These are the
-    strongest possible discovery signals — printed on the document by the
-    issuer — and unlike search they need no external API. Used to seed the
-    crawl queue (and as the fallback when search is unavailable).
-
-    Documents print bare domains ("www.dgshipping.gov.in") far more often
-    than scheme-full URLs; a bare-domain hint is upgraded to https so it can
-    seed the crawl. (Live-observed: the Indian SID's only printed pointer
-    was scheme-less and was being silently dropped, killing search-free
-    discovery for that document.)
-    """
-    hints = redacted_profile.get("source_discovery_hints") or []
-    urls: list[str] = []
-    for hint in hints:
-        text = str(hint or "").strip()
-        if text.startswith(("http://", "https://")):
-            urls.append(text)
-            continue
-        # A hint may embed a URL in prose — take the first http(s) substring.
-        m = re.search(r"https?://[^\s,;]+", text)
-        if m:
-            urls.append(m.group(0))
-            continue
-        # Only accept a bare-domain hint when the WHOLE hint is one — never
-        # pluck domains out of prose ("check dgshipping website" stays out).
-        m = re.match(
-            r"^(?:www\.)?[a-z0-9][a-z0-9.-]*\.[a-z]{2,}(?:/[^\s,;]*)?$",
-            text,
-            re.IGNORECASE,
-        )
-        if m:
-            urls.append("https://" + text.lstrip("/"))
-    return urls
 
 
 def run_discovery(redacted_profile: dict) -> dict:
@@ -761,78 +292,3 @@ def run_discovery(redacted_profile: dict) -> dict:
             "public verification page for this document type."
         ),
     }
-
-
-# --------------------------------------------------
-# JSON parsing
-# --------------------------------------------------
-
-def parse_json_response(
-    content: str
-) -> dict:
-
-    content = content.strip()
-
-    if content.startswith("```"):
-
-        content = content.replace(
-            "```json",
-            ""
-        )
-
-        content = content.replace(
-            "```",
-            ""
-        )
-
-        content = content.strip()
-
-    result = json.loads(content)
-
-    if not isinstance(result, dict):
-
-        raise ValueError(
-            "LLM did not return a JSON object."
-        )
-
-    return result
-
-
-def parse_json_array(
-    content: str
-) -> list[str]:
-
-    content = content.strip()
-
-    if content.startswith("```"):
-
-        content = content.replace(
-            "```json",
-            ""
-        )
-
-        content = content.replace(
-            "```",
-            ""
-        )
-
-        content = content.strip()
-
-    result = json.loads(content)
-
-    if not isinstance(result, list):
-
-        raise ValueError(
-            "LLM did not return a JSON array."
-        )
-
-    if not all(
-        isinstance(query, str)
-        for query in result
-    ):
-
-        raise ValueError(
-            "All search queries must be strings."
-        )
-
-    return result
