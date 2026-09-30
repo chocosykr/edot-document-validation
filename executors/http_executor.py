@@ -88,7 +88,7 @@ try:  # host / project-root runs
         substitute,
         substitute_dict,
     )
-    from executors.http_decider import decide, _matches_not_found_signature
+    from executors.http_decider import decide, _matches_not_found_signature, _json_message_reports_not_found
 except ImportError:  # pragma: no cover - sandbox path
     from http_helpers import (
         _compact_response,
@@ -102,7 +102,7 @@ except ImportError:  # pragma: no cover - sandbox path
         substitute,
         substitute_dict,
     )
-    from http_decider import decide, _matches_not_found_signature
+    from http_decider import decide, _matches_not_found_signature, _json_message_reports_not_found
 
 # Shared vision client, same import pattern as executors/browser_executor.py:
 # host runs import it from the project; inside the Docker sandbox
@@ -330,6 +330,44 @@ def main():
             "raw_response": _compact_response(body)
         }
     # HTTP error
+    elif (
+        status_code and status_code >= 400
+        and _is_captcha_rejection(status_code, body)
+    ):
+        # Captcha noise that survived the in-run retry: never a verdict.
+        result = {
+            "decision_status": "TECHNICAL_FAILURE",
+            "evidence": {
+                "http_status": status_code,
+                "reason": "captcha rejected after retries",
+            },
+            "raw_response": _compact_response(body),
+        }
+    elif (
+        status_code and status_code >= 400
+        and not (expected.get("not_found_signatures") or [])
+        and not (expected.get("failure_keywords") or [])
+        and _json_message_reports_not_found(body)
+    ):
+        # Bootstrap channel: a method with no learned signature and no
+        # declared keywords just received the registry's definitive business
+        # answer (a short JSON 4xx message saying "not found") — that IS the
+        # expected REJECTED outcome of a known-fake structural probe.
+        # (Live case, 2026-09-29: dgshippingbsid.in answers the fake-number
+        # probe with 400 {"message":"Invalid Input: Application ID not
+        # found."} — previously classified TECHNICAL_FAILURE, so the method
+        # could never pass validation.) The validator captures this exact
+        # message as a not_found_signature on the retest, after which the
+        # ordinary signature channel takes over.
+        result = {
+            "decision_status": "REJECTED",
+            "evidence": {
+                "http_status": status_code,
+                "method_type": "HTTP",
+                "bootstrap_not_found": True,
+            },
+            "raw_response": _compact_response(body),
+        }
     elif status_code and status_code >= 400:
         result = {
             "decision_status": "TECHNICAL_FAILURE",

@@ -1,7 +1,12 @@
 import unittest
 import os
 import shutil
-from execution.docker_runner import DockerMethodRunner
+from execution.docker_runner import (
+    DockerMethodRunner,
+    _method_timeout,
+    CAPTCHA_HTTP_TIMEOUT_SECONDS,
+    DEFAULT_TIMEOUT_SECONDS,
+)
 from execution.models import ExecutionRequest, ExecutionDecisionStatus
 from registry.models import ValidationMethod, MethodType, MethodStatus
 
@@ -54,6 +59,40 @@ class TestDockerMethodRunner(unittest.TestCase):
         
         self.assertEqual(result.decision_status, ExecutionDecisionStatus.TECHNICAL_FAILURE)
         self.assertIn("timed out", result.error)
+
+
+class TestMethodTimeouts(unittest.TestCase):
+    """Captcha-bearing HTTP methods need a wider container budget than plain
+    HTTP: FETCH_CAPTCHA -> SOLVE_CAPTCHA (remote vision-LLM) runs before the
+    lookup request (2026-09-29: dgshippingbsid.in timed out at 30s while the
+    site itself answered in 0.2s)."""
+
+    def test_plain_http_keeps_default_budget(self):
+        method = ValidationMethod(
+            method_id="M_T", method_type=MethodType.HTTP, source_url="https://x",
+            execution_steps=[{"action": "REQUEST", "method": "GET", "url": "https://x"}],
+        )
+        self.assertEqual(_method_timeout(method), DEFAULT_TIMEOUT_SECONDS)
+
+    def test_captcha_http_gets_widened_budget(self):
+        method = ValidationMethod(
+            method_id="M_T", method_type=MethodType.HTTP, source_url="https://x",
+            execution_steps=[
+                {"action": "FETCH_CAPTCHA", "url": "https://x/captcha"},
+                {"action": "SOLVE_CAPTCHA"},
+                {"action": "REQUEST", "method": "GET", "url": "https://x/v"},
+            ],
+        )
+        self.assertEqual(_method_timeout(method), CAPTCHA_HTTP_TIMEOUT_SECONDS)
+        self.assertGreater(CAPTCHA_HTTP_TIMEOUT_SECONDS, DEFAULT_TIMEOUT_SECONDS)
+
+    def test_browser_budget_untouched(self):
+        method = ValidationMethod(
+            method_id="M_T", method_type=MethodType.BROWSER, source_url="https://x",
+            execution_steps=[{"action": "SOLVE_CAPTCHA"}],
+        )
+        self.assertEqual(_method_timeout(method), 120)
+
 
 if __name__ == "__main__":
     unittest.main()

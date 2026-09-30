@@ -16,3 +16,5 @@ discovery_report_*.md
 *.db.bak-*
 test_*.db
 test_validator_sig.db
+.diag_sandbox/
+run*.log

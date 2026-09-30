@@ -1,3 +1,4 @@
+import json
 import logging
 import os
 from typing import List, Optional
@@ -105,6 +106,39 @@ class MethodValidator:
                 )
                 expected["success_keywords"] = []
                 method.expected_responses = expected
+
+        # Structural coverage pre-check: every required input must actually
+        # be consumed by some {{placeholder}} in the execution steps. (Live
+        # case, 2026-09-29: a pinning bug pinned the document-number param to
+        # the literal "Indos" while {{document_number}} appeared nowhere in
+        # the steps — the known-fake probe then passed byte-identically for
+        # any input, and genuine documents were confidently REJECTED.) This
+        # is a hard-wired invariant, not an LLM heuristic.
+        import re as _re
+        steps_body = _re.sub(
+            r"\s+",
+            " ",
+            json.dumps(method.execution_steps or [], default=str),
+        )
+        missing = [
+            f for f in (method.required_inputs or [])
+            if "{{" + f + "}}" not in steps_body
+        ]
+        if missing:
+            report.status = ValidationReportStatus.ERROR
+            report.failure_reason = (
+                "Structural coverage failure: required_inputs "
+                f"{missing} never appear as {{placeholder}} in "
+                "execution_steps. Refusing to validate a method that "
+                "cannot consume its required inputs."
+            )
+            logger.warning(
+                "Method %s failed placeholder-coverage pre-check: %s",
+                method.method_id, missing,
+            )
+            if self.registry:
+                self.registry.update_status(method.method_id, MethodStatus.UNHEALTHY)
+            return report
 
         all_required_passed = True
 

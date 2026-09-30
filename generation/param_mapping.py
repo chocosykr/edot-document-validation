@@ -79,6 +79,7 @@ def _build_narrow_mapping_payload(
 def _resolve_param_mapping(
     llm_mapping: Optional[dict],
     xhr_contract: dict,
+    available_inputs: Optional[List[str]] = None,
 ) -> tuple[Dict[str, str], List[str]]:
     """
     Resolve the wire-param → {{profile_field}} mapping from the narrow LLM's
@@ -142,11 +143,35 @@ def _resolve_param_mapping(
             continue
         p_lower = param.lower()
         for field, aliases in well_known.items():
+            # Availability gate: a fallback mapping for a field the source
+            # document cannot supply would make the method unexecutable (the
+            # engine refuses to submit redaction tokens). Live case,
+            # 2026-09-29: a CDC document carries no date_of_birth, yet the
+            # dob param was fallback-mapped and marked required — refusing
+            # the whole run for a param the esamudra CDC lookup does not
+            # even need. available_inputs=None keeps the old behavior.
+            if available_inputs is not None and field not in available_inputs:
+                continue
             if any(alias in p_lower for alias in aliases):
                 param_mapping[param] = f"{{{{{field}}}}}"
                 if field not in required_inputs:
                     required_inputs.append(field)
                 break
+
+    # Drop mappings for fields the source document cannot supply (explicit
+    # LLM mappings included — a method that can never be executed is worse
+    # than one built without the optional param).
+    if available_inputs is not None:
+        unavailable = [
+            p for p, ph in param_mapping.items()
+            if isinstance(ph, str) and ph.startswith("{{")
+            and ph[2:-2].strip() not in available_inputs
+        ]
+        for p in unavailable:
+            del param_mapping[p]
+        required_inputs = [
+            f for f in required_inputs if f in available_inputs
+        ]
 
     # Filter inputs the model hallucinated from workflow params (a pinned
     # search-type selector is never a document-sourced input).
@@ -177,22 +202,25 @@ def _infer_workflow_params(
     param_mapping = (llm_mapping or {}).get("param_mapping") or {}
 
     for param in list(xhr_contract.get("dynamic_params", [])):
-        mapped = str(param_mapping.get(param) or "").lower()
-        if param in workflow_params or _is_dispatch_selector(param, xhr_contract.get("workflow_options") or []):
+        if param in workflow_params:
             continue
-        # A PUNTED mapping (null) must not skip pinning: the page's own
-        # <select> is the evidence, not the model's guess. (Live case,
-        # 2026-09-28: the mapping model returned searchType=null, the pinning
-        # loop was skipped entirely, the request went out WITHOUT the
-        # dispatch selector, and esamudra answered 108 chars of "please try
-        # later".) Only skip when the model mapped the param to something
-        # else entirely.
-        if mapped and "document_type" not in mapped and "document" not in mapped:
+        # Pinning is exclusively for DISPATCH SELECTORS: params that
+        # correspond to a <select> on the source page (matched structurally
+        # by shared vocabulary, see _is_dispatch_selector). Everything else
+        # — document numbers, dates, punted params, hallucinated mappings —
+        # must keep whatever {{placeholder}} mapping it has.
+        # (Live case, 2026-09-29: non-selector params txtNo/dob fell into
+        # this loop through a substring guard and an all-options fallback,
+        # got pinned to the literal page values "Indos"/"CDC", and every
+        # genuine document was reported not-found.)
+        # A PUNTED mapping (null) must not skip selector pinning: the
+        # page's own <select> is the evidence, not the model's guess.
+        # (Live case, 2026-09-28: the mapping model returned
+        # searchType=null, the pinning loop was skipped entirely, the
+        # request went out WITHOUT the dispatch selector, and esamudra
+        # answered 108 chars of "please try later".)
+        if not _is_dispatch_selector(param, xhr_contract.get("workflow_options") or []):
             continue
-        if "document_type_key" in mapped:
-            mapped = document_type_key(redacted_profile.get("document_type", ""))
-        else:
-            mapped = document_type_key(redacted_profile.get("document_type", ""))
         # Tokens naming THIS document type, from the canonical alias table
         # ("Continuous Discharge Certificate (CDC)" -> IN_CDC -> "CDC"),
         # plus the profile's own first word. An option matches when its
@@ -218,11 +246,16 @@ def _infer_workflow_params(
 
         # Only options from THE param's own <select> are eligible evidence:
         # a page can carry several selects (document type, port, year, …) and
-        # an option from an unrelated one must never be pinned.
+        # an option from an unrelated one must never be pinned. If the param
+        # matches NO select on the page it is not a dispatch selector at all
+        # (live case, 2026-09-29: txtNo fell through to the all-options
+        # fallback and got pinned to the literal "Indos"), so leave it alone.
         own_options = [
             o for o in xhr_contract.get("workflow_options", [])
             if _is_dispatch_selector(param, [o])
-        ] or xhr_contract.get("workflow_options", [])
+        ]
+        if not own_options:
+            continue
         for option in own_options:
             value = str(option.get("value") or "")
             text = str(option.get("text") or "")
@@ -237,29 +270,44 @@ def _infer_workflow_params(
     return workflow_params
 
 
+def _ident_tokens(name: str, widget_prefixes: set) -> set:
+    """Tokenize an identifier the way its author wrote it: split on
+    non-alphanumerics AND on camelCase boundaries, then lowercase.
+
+    "cmbSearch_by" -> {"search", "by"}; "searchType" -> {"search", "type"}
+    — the two share "search", which is exactly the structural signal the
+    dispatch detector needs. Lowercasing before splitting (the previous
+    behavior) glued camelCase words into single unmatchable tokens
+    ("cmbsearch", "searchtype"), which made every selector unmatchable and
+    silently disabled the whole structural dispatch path (live-confirmed
+    2026-09-29)."""
+    tokens = set()
+    for part in re.split(r"[^A-Za-z0-9]+", str(name or "")):
+        for word in re.findall(
+            r"[A-Z]+(?=[A-Z][a-z])|[A-Z]?[a-z]+|[A-Z]+|\d+", part
+        ):
+            w = word.lower()
+            if len(w) >= 3 and w not in widget_prefixes:
+                tokens.add(w)
+    return tokens
+
+
 def _is_dispatch_selector(param: str, workflow_options: list) -> bool:
     """True when ``param`` corresponds to a <select> on the source page.
 
     Purely structural: the param and the page's select share a vocabulary
-    word (case-insensitive alpha token). "searchType" (servlet param) and
+    word (camelCase-aware token). "searchType" (servlet param) and
     "cmbSearch_by" (the page's select) share "search"; "CrewCDCNo" shares
     nothing with a select named "cmbSearch_by". The prefix tokens below are
     universal HTML naming conventions (cmb/ddl/drp = combo-box/dropdown
     widgets), not portal-specific knowledge.
     """
     _WIDGET_PREFIXES = {"cmb", "ddl", "drp", "select", "list"}
-    p_tokens = {
-        t for t in re.split(r"[^a-z]+", str(param or "").lower())
-        if len(t) >= 4 and t not in _WIDGET_PREFIXES
-    }
+    p_tokens = _ident_tokens(param, _WIDGET_PREFIXES)
     if not p_tokens:
         return False
     for option in workflow_options or []:
-        select_name = str(option.get("select") or "").lower()
-        s_tokens = {
-            t for t in re.split(r"[^a-z]+", select_name)
-            if len(t) >= 4 and t not in _WIDGET_PREFIXES
-        }
+        s_tokens = _ident_tokens(option.get("select") or "", _WIDGET_PREFIXES)
         if p_tokens & s_tokens:
             return True
     return False

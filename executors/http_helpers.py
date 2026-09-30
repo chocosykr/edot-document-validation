@@ -208,7 +208,17 @@ def _with_retry(fn, *args, **kwargs):
             isinstance(result, tuple) and result
             and isinstance(result[0], int)
             and attempt < attempts
-            and (_is_5xx(result[0]) or _body_worth_retrying(result))
+            and (
+                _is_5xx(result[0])
+                # 4xx is a DEFINITIVE application-level answer — never retry
+                # it. (Live case, 2026-09-29: dgshippingbsid.in's verify
+                # endpoint answers tiny 400 JSON bodies — captcha errors AND
+                # business rejections like "Application ID not found" — and
+                # the tiny-body rule re-submitted them, burning single-use
+                # captchas so the executor only ever saw the final "expired
+                # captcha" response and could never reach a real verdict.)
+                or (result[0] < 400 and _body_worth_retrying(result))
+            )
         ):
             time.sleep(1.5 * (2 ** (attempt - 1)) + random.uniform(0, 0.5))
             continue

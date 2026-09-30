@@ -53,6 +53,38 @@ def _matches_not_found_signature(status_code, body: str, expected: dict) -> bool
     return False
 
 
+def _json_message_reports_not_found(body: str) -> bool:
+    """Bootstrap-only: does a JSON 4xx body's message deterministically say
+    the submitted value is not found?
+
+    Scoped to methods with no learned not_found_signatures and no declared
+    failure_keywords (checked by the caller): the structural probe needs to
+    read the registry's business answer before any signature has been
+    captured. Deliberately narrow — a SHORT JSON message explicitly saying
+    "not found"; captcha failures (retryable noise), auth errors, rate
+    limits and HTML error pages do NOT match and stay TECHNICAL_FAILURE.
+    Once the validator captures the signature, the ordinary (preferred)
+    signature channel takes over.
+    """
+    try:
+        parsed = json.loads(body)
+    except (json.JSONDecodeError, ValueError):
+        return False
+    if not isinstance(parsed, dict):
+        return False
+    message = parsed.get("message")
+    if not isinstance(message, str):
+        return False
+    lowered = message.lower()
+    return (
+        len(message) <= 200
+        and "not found" in lowered
+        and "captcha" not in lowered
+        and "unauthorized" not in lowered
+        and "forbidden" not in lowered
+    )
+
+
 def decide(body: str, expected: dict) -> str:
     # When comparison_mode is field_match AND the method does not yet carry
     # discovered text_mappings, the validator has nothing to compare against

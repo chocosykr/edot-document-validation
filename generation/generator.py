@@ -288,7 +288,9 @@ def generate_candidate_method(
                 if field not in {"document_type", "document_type_key"}
             ]
 
-        param_mapping, required_inputs = _resolve_param_mapping(llm_mapping, xhr_contract)
+        param_mapping, required_inputs = _resolve_param_mapping(
+            llm_mapping, xhr_contract, available_inputs=available_inputs
+        )
         expected_responses = {
             "comparison_mode": "field_match",
             "method_schema": CURRENT_METHOD_SCHEMA,

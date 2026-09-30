@@ -54,11 +54,11 @@ own package. When you touch a stage, edit its module — not the orchestrator.
 | `generation/param_mapping.py` | Component 3: narrow LLM mapping, workflow-param pinning, dispatch-selector detection |
 | `generation/discriminators.py` | Component 2: known-fake probe + difflib marker extraction |
 | `generation/post_process.py` | Deterministic post-generation enforcement (finalization) |
-| `execution/docker_runner.py` | Docker sandbox runner; ships executor modules into the container |
+| `execution/docker_runner.py` | Docker sandbox runner; ships executor modules into the container (`_method_timeout`) |
 | `execution/safety.py` | Input guarding, contact-only synthesis, structural test values |
 | `executors/http_executor.py` | HTTP **step runner**: captcha round, GET_HTML/EXTRACT, REQUEST loop, `main()` |
 | `executors/http_helpers.py` | HTTP verbs, session/cookies, retry, response compaction, substitution, captcha fetch |
-| `executors/http_decider.py` | Response classification: `decide()`, learned not-found signatures |
+| `executors/http_decider.py` | Response classification: `decide()`, learned not-found signatures (new `_json_message_reports_not_found`) |
 | `executors/form_executor.py` | WEB_FORM method runner |
 | `executors/qr_url_executor.py` | QR_URL method runner |
 | `executors/browser_executor.py` | BROWSER method runner (Playwright) |
@@ -667,6 +667,15 @@ Concrete consequence: a brand-new registry's first generated method could be
 promoted on a meaningless pass, and its first real document would then be
 judged by fuzzy matching alone against whatever the wrong endpoint returns.
 (The original INDOS incident, §5a, is exactly this failure shape.)
+
+### d. Four pipeline defects fixed (September 2026 session)
+
+- **pinning/camelCase:** Fixed issue where parameter pinning failed on camelCase inputs.
+- **captcha Docker budget:** Added specific timeout (`_method_timeout`) for captcha-bearing requests.
+- **retry-burns-single-use-captcha:** Fixed issue where retrying a request burned a single-use captcha.
+- **4xx bootstrap channel:** Handled 4xx errors properly in the bootstrap channel (no retry).
+- **availability gate + coverage pre-check:** Added gate for method availability and structural placeholder coverage pre-check.
+
 
 **c3. The agentic fallback loop bypassed the live-submission guard and
 promoted three untested guesses — one reached the live registry.**

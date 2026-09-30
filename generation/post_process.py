@@ -182,6 +182,49 @@ def _normalize_input_names(llm_output: dict) -> None:
                             container[k] = _rename_placeholder(v, rename_map)
 
 
+def _reconcile_wire_param_assignments(llm_output: dict) -> None:
+    """Align each wire param's {{placeholder}} with the canonical input its
+    own param NAME implies (full-LLM path only).
+
+    The mapping LLM sometimes declares inputs it never references and
+    references placeholders it never declared (live case, 2026-09-29:
+    dmamyanmar method declared CrewCDCNo/CrewPassport/Serial but its steps
+    used {{document_number}}/{{serial}}/{{passport}} — an incoherent method
+    the pipeline can never execute). Wire param names carry meaning: the
+    same generic vocabulary the well-known-name fallback uses (cdc/passport/
+    serial markers) resolves the intended input for each param. Only params
+    whose canonical name matches a DECLARED input are rewritten — anything
+    else (anti-forgery tokens, literal emails) is left alone. Runs BEFORE
+    placeholder promotion so orphan placeholders cannot leak into
+    required_inputs as phantom inputs.
+    """
+    steps = llm_output.get("execution_steps") or []
+    declared = {
+        str(x).strip() for x in (llm_output.get("required_inputs") or [])
+        if str(x or "").strip()
+    }
+    if not declared:
+        return
+    for step in steps:
+        if not isinstance(step, dict):
+            continue
+        for container_key in ("params", "json_body"):
+            container = step.get(container_key)
+            if not isinstance(container, dict):
+                continue
+            for param_name in list(container):
+                canonical = _canonical_input_name(param_name)
+                if canonical not in declared:
+                    continue
+                wanted = "{{" + canonical + "}}"
+                if container[param_name] != wanted:
+                    logger.warning(
+                        "Generator: wire param %r reassigned to %s "
+                        "(its name implies this input)", param_name, wanted,
+                    )
+                    container[param_name] = wanted
+
+
 def _enforce_contact_only_declarations(llm_output: dict, expected_responses: dict) -> None:
     """Infer contact-only inputs from canonical names and add declarations."""
     contact_declared = set(
@@ -214,6 +257,10 @@ def finalize_method(llm_output: dict) -> ValidationMethod:
     """
     # 1. Canonical input-name normalization
     _normalize_input_names(llm_output)
+
+    # 1b. Wire-param/placeholder reconciliation (declared inputs vs the
+    # placeholders the steps actually reference)
+    _reconcile_wire_param_assignments(llm_output)
 
     # 2. Build expected_responses from the LLM output's keyword markers
     llm_keywords = (llm_output.get("expected_responses") or {})

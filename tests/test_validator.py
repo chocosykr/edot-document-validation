@@ -244,5 +244,65 @@ class TestMethodValidator(unittest.TestCase):
         self.assertIn("Application ID not found", sigs[0]["contains"])
 
 
+class TestPlaceholderCoverage(unittest.TestCase):
+    """Structural pre-check: every required input must appear as a
+    {{placeholder}} in the execution steps (2026-09-29 false-rejection
+    incident: txtNo was pinned to the literal "Indos" while
+    {{document_number}} appeared nowhere — any input produced the same
+    request, so genuine documents were confidently REJECTED)."""
+
+    def _validator_and_registry(self):
+        registry = MagicMock(spec=MethodRegistry)
+        runner = _mock_runner("REJECTED")
+        validator = MethodValidator(
+            runner=runner,
+            registry=registry,
+            executor_script_path="tests/dummy_executor.py",
+        )
+        return validator, registry, runner
+
+    def test_method_without_placeholder_coverage_is_refused(self):
+        method = _make_method()
+        method.required_inputs = ["document_number"]
+        # The live bug shape: the number param carries a literal, not a
+        # placeholder.
+        method.execution_steps = [{
+            "action": "REQUEST", "method": "POST",
+            "url": "https://mock.example.com/check",
+            "params": {"txtNo": "Indos", "searchType": "Indos"},
+        }]
+        validator, registry, runner = self._validator_and_registry()
+
+        report = validator.validate(
+            method,
+            [TestCase(name="structural_check", inputs={"document_number": "TEST_STRUCTURAL_001"}, expected_decision="REJECTED")],
+        )
+
+        self.assertEqual(report.status, ValidationReportStatus.ERROR)
+        self.assertIn("coverage", (report.failure_reason or ""))
+        self.assertIn("document_number", (report.failure_reason or ""))
+        # The probe must never have run: no Docker call, no healing.
+        runner.execute_method.assert_not_called()
+        registry.update_status.assert_called_once()
+
+    def test_method_with_full_coverage_proceeds(self):
+        method = _make_method()
+        method.required_inputs = ["document_number"]
+        method.execution_steps = [{
+            "action": "REQUEST", "method": "POST",
+            "url": "https://mock.example.com/check",
+            "params": {"txtNo": "{{document_number}}"},
+        }]
+        validator, registry, runner = self._validator_and_registry()
+
+        report = validator.validate(
+            method,
+            [TestCase(name="structural_check", inputs={"document_number": "TEST_STRUCTURAL_001"}, expected_decision="REJECTED")],
+        )
+
+        self.assertEqual(report.status, ValidationReportStatus.PASSED)
+        runner.execute_method.assert_called()
+
+
 if __name__ == "__main__":
     unittest.main()

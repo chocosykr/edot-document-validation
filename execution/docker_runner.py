@@ -45,6 +45,13 @@ _NETWORK_REQUIRED = {MethodType.HTTP, MethodType.WEB_FORM, MethodType.QR_URL, Me
 
 DEFAULT_TIMEOUT_SECONDS = 30
 BROWSER_TIMEOUT_SECONDS = 120
+# Captcha-bearing HTTP methods run FETCH_CAPTCHA -> SOLVE_CAPTCHA (a remote
+# vision-LLM call, ~CAPTCHA_VISION_TIMEOUT_S on its own) before the actual
+# lookup request. The plain 30s HTTP budget times them out before the site
+# is even asked (live-confirmed 2026-09-29 on dgshippingbsid.in, which
+# itself answers in ~0.2s). One vision call + retries fits in 90s with
+# margin.
+CAPTCHA_HTTP_TIMEOUT_SECONDS = 90
 
 _METHOD_TIMEOUTS = {
     MethodType.HTTP: DEFAULT_TIMEOUT_SECONDS,
@@ -52,6 +59,17 @@ _METHOD_TIMEOUTS = {
     MethodType.QR_URL: DEFAULT_TIMEOUT_SECONDS,
     MethodType.BROWSER: BROWSER_TIMEOUT_SECONDS,
 }
+
+
+def _method_timeout(method) -> int:
+    """Container budget for a method; captcha steps widen the HTTP budget."""
+    base = _METHOD_TIMEOUTS.get(method.method_type, DEFAULT_TIMEOUT_SECONDS)
+    if base == DEFAULT_TIMEOUT_SECONDS:
+        for step in (method.execution_steps or []):
+            action = str((step or {}).get("action", "")).upper()
+            if action in ("FETCH_CAPTCHA", "SOLVE_CAPTCHA"):
+                return CAPTCHA_HTTP_TIMEOUT_SECONDS
+    return base
 
 # Chromium (BROWSER executor) crashes its renderer under a 256m cgroup limit
 # on JS-heavy pages ("Target crashed"). Browsers need their own budget; other
@@ -268,7 +286,7 @@ class DockerMethodRunner:
             timeout = (
                 self.timeout_seconds
                 if self.timeout_seconds is not None
-                else _METHOD_TIMEOUTS.get(request.method.method_type, DEFAULT_TIMEOUT_SECONDS)
+                else _method_timeout(request.method)
             )
 
             result = subprocess.run(
