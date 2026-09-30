@@ -9,7 +9,7 @@ import os
 sys.path.insert(0, os.path.dirname(__file__))
 
 from registry.repository import MethodRegistry
-from registry.models import MethodStatus
+from registry.models import MethodStatus, ValidationMethod
 
 
 def cmd_list(args):
@@ -48,6 +48,20 @@ def cmd_delete(args):
         print(f"Method '{args.method_id}' not found.")
 
 
+def cmd_add(args):
+    """Register a method from a JSON file (supports SCRIPT methods with a
+    ``script_source`` body). e.g. registry_tool.py add method.json"""
+    r = MethodRegistry()
+    with open(args.path, "r", encoding="utf-8") as f:
+        data = json.load(f)
+    method = ValidationMethod(**data)
+    r.register_method(method)
+    print(
+        f"Registered {method.method_id} "
+        f"({method.method_type.value}) status={method.status.name}"
+    )
+
+
 def cmd_cleanup(args):
     r = MethodRegistry()
     removed = []
@@ -82,6 +96,11 @@ def main():
     p_del = sub.add_parser("delete", aliases=["rm"], help="Delete a method (use 'ALL' to wipe)")
     p_del.add_argument("method_id", help="Method ID to delete, or 'ALL'")
     p_del.set_defaults(func=cmd_delete)
+
+    # add
+    p_add = sub.add_parser("add", help="Register a method from a JSON file")
+    p_add.add_argument("path", help="Path to a ValidationMethod JSON file")
+    p_add.set_defaults(func=cmd_add)
 
     # cleanup
     p_clean = sub.add_parser("cleanup", help="Delete all UNHEALTHY and INACTIVE methods")

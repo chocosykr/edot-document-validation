@@ -1,0 +1,134 @@
+Selected: InputFiles/SID Anup-1.pdf
+
+[1/4] Running OCR...
+INFO:ocr.client:OCR cache hit for 6f862e21bf57
+[2/4] Extracting and redacting...
+       Lookup credentials captured in memory (never persisted).
+[3/4] Running validation engine...
+INFO:engine.validation_engine:Starting validation — country='India' doc_type="Seafarer's Identity Document"
+INFO:engine.validation_engine:No active method found. Checking confirmed source database.
+INFO:engine.validation_engine:No doc-type-tagged source, but 2 same-country source(s) exist — attempting source reuse via page evidence.
+INFO:engine.validation_engine:Found 2 source(s) in DB. Generating candidate method.
+INFO:generation.generator:XHR extraction gate: source_url=http://220.156.189.33/esamudraUI/jsp/examination/checker/PP_IndosChecker.jsp page_structure_present=True inline_js_present=True
+INFO:generation.xhr_contract:XHR extractor success: {"endpoint": "http://220.156.189.33/esamudraUI/checkerajaxservlet", "verb": "POST", "param_location": "query", "dynamic_params": ["txtNo", "dob", "searchType"], "static_params": {"processId": "PPIndosCheck"}}
+INFO:generation.generator:XHR extractor result: source_url=http://220.156.189.33/esamudraUI/jsp/examination/checker/PP_IndosChecker.jsp xhr_contract={'endpoint': 'http://220.156.189.33/esamudraUI/checkerajaxservlet', 'verb': 'POST', 'param_location': 'query', 'dynamic_params': ['txtNo', 'dob', 'searchType'], 'static_params': {'processId': 'PPIndosCheck'}}
+INFO:utils.llm_client:LLM call: model='openai/gpt-oss-120b' endpoint='https://api.groq.com/openai/v1/chat/completions' frontier=True
+
+[DEBUG] Narrow mapping LLM output:
+{
+  "param_mapping": {
+    "txtNo": "{{document_number}}",
+    "dob": "{{date_of_birth}}",
+    "searchType": "{{document_type_key}}"
+  },
+  "required_inputs": [
+    "document_number",
+    "date_of_birth",
+    "document_type_key"
+  ],
+  "workflow_params": {}
+}
+
+ERROR:engine.validation_engine:Method generation failed: Workflow parameter 'searchType' was mapped to document_type without a confirmed page option.
+WARNING:engine.validation_engine:Generation from DB source failed (Method generation failed: Workflow parameter 'searchType' was mapped to document_type without a confirmed page option.); falling through to discovery.
+INFO:engine.validation_engine:No DB source found. Running discovery agent.
+
+Generating search queries with LLM...
+[discovery] LLM call using model='openai/gpt-oss-120b'
+LLM rate limit reached; retrying in 8s...
+
+Searching: DG Shipping seafarer identity document verification portal India
+Search failed: This request exceeds your plan's set usage limit. Please upgrade your plan or contact support@tavily.com
+
+Searching: Directorate General of Shipping SID verification online
+Search failed: This request exceeds your plan's set usage limit. Please upgrade your plan or contact support@tavily.com
+
+Searching: Indian flag state seafarer identity document validation service
+Search failed: This request exceeds your plan's set usage limit. Please upgrade your plan or contact support@tavily.com
+
+Searching: DG Shipping seafarer identity document verification guidelines PDF
+Search failed: This request exceeds your plan's set usage limit. Please upgrade your plan or contact support@tavily.com
+
+Searching: Maritime Administration of India seafarer identity document verification process
+Search failed: This request exceeds your plan's set usage limit. Please upgrade your plan or contact support@tavily.com
+
+Searching: DG Shipping alternative verification procedures for seafarer identity documents
+Search failed: This request exceeds your plan's set usage limit. Please upgrade your plan or contact support@tavily.com
+
+Searching: Indian Directorate General of Shipping official SID verification website
+Search failed: This request exceeds your plan's set usage limit. Please upgrade your plan or contact support@tavily.com
+
+Searching: How to verify Indian seafarer identity document through DG Shipping
+Search failed: This request exceeds your plan's set usage limit. Please upgrade your plan or contact support@tavily.com
+[discovery] search returned nothing (8 error(s) across 8 queries) — falling back to the document's own source hints.
+
+[discovery] attempt 1/10: https://www.dgshipping.gov.in
+[discovery] rejected (deterministic): page could not be fetched (ConnectTimeout: HTTPSConnectionPool(host='www.dgshipping.gov.in', port=443): Max retries exceeded with url: / (Caused by ConnectTimeoutError(<HTTPSConnection(host='www.dgshipping.gov.in', port=443) at 0x70892499bc80>, 'Connection to www.dgshipping.gov.in timed out. (connect timeout=20)')))
+
+[discovery] exhausted 1 attempt(s) without a valid page; returning no source (engine will report VALIDATION_UNAVAILABLE).
+
+[4/4] Generating report...
+Report saved to: ./discovery_report_SID Anup-1_20260930_124956.md
+
+--- REDACTED PROFILE ---
+{
+  "document_type": "Seafarer's Identity Document",
+  "document_type_key": "SID",
+  "issuing_organization": "DG Shipping",
+  "issuing_country": "India",
+  "authorities": {
+    "issuing_authority": "DG Shipping, Mumbai",
+    "administering_authority": null,
+    "flag_state": "India"
+  },
+  "document_holder": {
+    "name": "[PERSON_NAME]",
+    "date_of_birth": "[DATE_OF_BIRTH]"
+  },
+  "document_numbers": [
+    "[DOCUMENT_NUMBER]"
+  ],
+  "issue_date": "20 04 2021",
+  "expiry_date": "19 04 2031",
+  "identifying_fields": {
+    "identifying_characteristics": "SCAR ON RIGHT CHEEK",
+    "nationality": "IND",
+    "sex": "M",
+    "place_of_birth": "KHURDI",
+    "place_of_issue": "MUMBAI"
+  },
+  "missing_or_unclear_fields": [],
+  "inconsistencies": [],
+  "source_discovery_hints": [
+    "www.dgshipping.gov.in"
+  ],
+  "redaction_summary": {
+    "fields_redacted": [
+      "document_holder.name",
+      "document_holder.date_of_birth",
+      "document_numbers[0]"
+    ],
+    "pii_present": true
+  }
+}
+
+--- VALIDATION DECISION ---
+{
+  "document_result": "UNKNOWN",
+  "evidence_quality": "NONE",
+  "decision_status": "TECHNICAL_FAILURE",
+  "evidence": {},
+  "method_id": null,
+  "method_type": null,
+  "source_url": null,
+  "raw_response": null,
+  "failure_reason": "Method generation failed: Workflow parameter 'searchType' was mapped to document_type without a confirmed page option.",
+  "timestamp": "2026-09-30T07:19:22.967955+00:00"
+}
+
+[!] Technical Failure occurred. Scrubbed log written to agent_debug_log.json for external agent debugging.
+
+[?] Do you want to activate the Agentic Fallback Loop to automatically fix this issue?
+    (This will run the fallback agent on the configured model 'openai/gpt-oss-120b' and may consume credits.)
+Proceed? (y/n): [!] No input available; skipping the fallback loop.
+[!] Agentic Fallback Loop aborted.

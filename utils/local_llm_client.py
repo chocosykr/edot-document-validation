@@ -6,7 +6,12 @@ from typing import Any, Dict, Optional
 
 from dotenv import load_dotenv
 
-from utils.llm_client import get_llm_config, _extract_json
+from utils.llm_client import (
+    get_llm_config,
+    _extract_json,
+    _post_chat,
+    _should_scrub,
+)
 
 load_dotenv()
 
@@ -28,6 +33,14 @@ def generate_local_json(system_prompt: str, user_prompt: str) -> Optional[Dict[s
     if not url or not api_key:
         return None
 
+    # This path carries raw document fields; when the toggle selects a
+    # frontier provider, scrub identity values before they leave the machine
+    # (unless the operator opted out via DVS_SCRUB_FRONTIER=false).
+    if _should_scrub(config):
+        from utils.log_scrubber import scrub_pii
+        system_prompt = scrub_pii(system_prompt)
+        user_prompt = scrub_pii(user_prompt)
+
     payload = {
         "model": model,
         "messages": [
@@ -36,19 +49,14 @@ def generate_local_json(system_prompt: str, user_prompt: str) -> Optional[Dict[s
         ],
         "temperature": 0,
     }
-    request = urllib.request.Request(
+    content = _post_chat(
         url,
-        data=json.dumps(payload).encode("utf-8"),
-        headers={
+        {
             "Content-Type": "application/json",
             "Authorization": f"Bearer {api_key}",
         },
-        method="POST",
+        payload,
     )
-    try:
-        with urllib.request.urlopen(request, timeout=60) as response:
-            body = json.loads(response.read().decode("utf-8"))
-        content = body["choices"][0]["message"]["content"]
-        return _extract_json(content)
-    except Exception:
+    if content is None:
         return None
+    return _extract_json(content)

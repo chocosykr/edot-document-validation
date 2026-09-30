@@ -1,0 +1,5 @@
+DBG vision -> '2dcpy5'
+DBG verify 400: {"message":"Invalid Input: Application ID not found."}
+[HTTP] FETCH_CAPTCHA ok: image_b64_len=9336 captcha_id=set
+[HTTP] SOLVE_CAPTCHA ok (6 chars)
+HTTP executor done. Decision: REJECTED

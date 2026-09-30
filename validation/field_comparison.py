@@ -16,7 +16,7 @@ path, contributing to the overall verdict alongside text field scores.
 import json
 import re
 from datetime import datetime
-from typing import Any, Dict, Iterable, Optional
+from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 from bs4 import BeautifulSoup
 from rapidfuzz.fuzz import ratio
@@ -60,6 +60,9 @@ def _clean(value: Any) -> str:
     return re.sub(r"\s+", " ", str(value or "")).strip().lower()
 
 
+_DIGIT_RE = re.compile(r"\d")
+
+
 def _response_text(response: str) -> str:
     if not response:
         return ""
@@ -72,6 +75,10 @@ def _field_similarity(expected: str, actual: str) -> float:
     date_formats = (
         "%d/%m/%Y", "%d-%m-%Y", "%Y-%m-%d", "%d %m %Y", "%Y %m %d",
         "%d/%b/%Y", "%d-%b-%Y", "%d/%B/%Y", "%d-%B-%Y", "%d %b %Y", "%d %B %Y",
+        # Portals commonly render a date with a comma after the day
+        # ("05, Mar 1993" on DMAMyanmar). Without these the calendar check
+        # misses and a correct DOB degrades to fuzzy text (~78/100).
+        "%d, %b %Y", "%d, %B %Y",
     )
     for expected_format in date_formats:
         try:
@@ -98,8 +105,53 @@ def _json_values(value: Any) -> Iterable[str]:
         yield _clean(value)
 
 
+def _direct_cells(row) -> Tuple[List[str], bool, bool]:
+    """Return ``(texts, all_th, mixed_th_td)`` for a row's DIRECT cells.
+
+    Only direct children count. A ``<tr>`` that wraps a nested ``<table>``
+    would otherwise contribute every nested cell to the outer row and shift
+    every column after it.
+    """
+    cells = row.find_all(["th", "td"], recursive=False)
+    texts = [_clean(cell.get_text(" ", strip=True)) for cell in cells]
+    names = {cell.name for cell in cells}
+    return texts, names == {"th"}, names == {"th", "td"}
+
+
+def _label_row(texts: List[str]) -> bool:
+    """True when every cell is a non-empty label carrying no value digits."""
+    return len(texts) >= 2 and all(t and not _DIGIT_RE.search(t) for t in texts)
+
+
+def _value_row(texts: List[str]) -> bool:
+    """True when every cell carries a value (at least one digit each).
+
+    This is deliberately strict: a column header is only recognised when the
+    row below it is unambiguously data. A two-cell ``<th>label</th>`` +
+    ``<td>value</td>`` row, or a label/value table whose values are all text,
+    therefore keeps the plain label->value reading instead of being paired
+    against the following row.
+    """
+    return len(texts) >= 2 and all(_DIGIT_RE.search(t) for t in texts)
+
+
 def _extract_response_fields(response: str) -> Dict[str, str]:
-    """Extract labeled fields from JSON or HTML tables/forms."""
+    """Extract labeled fields from JSON or HTML tables/forms.
+
+    Two HTML shapes are handled:
+
+    * a column header row (all ``<th>``, or an all-label ``<td>`` row whose
+      successor is all values) is paired COLUMN-WISE with the data row below
+      it; and
+    * a plain ``<tr><td>label</td><td>value</td></tr>`` row is read as
+      ``label -> value``.
+
+    Pairing ``cells[0] -> cells[1]`` *inside* a header row is a bug: it turns
+    ``<td>CDC No.</td><td>Date of Birth</td>`` into ``"CDC No." ->
+    "Date of Birth"`` and drops the real values to the next row over, which
+    is how a genuinely valid DMAMyanmar record got scored 19/78/38 and
+    REJECTED.
+    """
     fields: Dict[str, str] = {}
     if not response:
         return fields
@@ -119,10 +171,23 @@ def _extract_response_fields(response: str) -> Dict[str, str]:
         pass
 
     soup = BeautifulSoup(response, "html.parser")
-    for row in soup.find_all("tr"):
-        cells = [_clean(cell.get_text(" ", strip=True)) for cell in row.find_all(["th", "td"])]
-        if len(cells) >= 2 and cells[0]:
-            fields[cells[0]] = cells[1]
+    rows = [_direct_cells(row) for row in soup.find_all("tr")]
+    consumed: set = set()
+    for index, (texts, all_th, mixed) in enumerate(rows):
+        if index in consumed or len(texts) < 2:
+            continue
+        next_texts = rows[index + 1][0] if index + 1 < len(rows) else []
+        is_header = len(next_texts) == len(texts) and (
+            all_th or (not mixed and _label_row(texts) and _value_row(next_texts))
+        )
+        if is_header:
+            for label, value in zip(texts, next_texts):
+                if label and value:
+                    fields[label] = value
+            consumed.add(index + 1)
+            continue
+        if texts[0]:
+            fields[texts[0]] = texts[1]
     for label in soup.find_all(["label", "dt"]):
         value = label.find_next_sibling(["input", "dd"])
         if value:
@@ -362,6 +427,13 @@ def compare_response(
             parsed is None
             and len(response.strip()) < _TINY_UNPARSEABLE_LIMIT
             and not (field_mapping or {}).get("text_mappings")
+            # Trust the executor's keyword-based REJECTED verdict: the
+            # decider saw a declared failure_keyword in the body (e.g.
+            # "VerificationError" on dmamyanmar.org) and classified it
+            # REJECTED. A tiny body containing that keyword IS the site's
+            # canonical refusal — overriding to TECHNICAL_FAILURE would
+            # prevent validation convergence (Phase 4.5 fix).
+            and result.decision_status != ExecutionDecisionStatus.REJECTED
         ):
             return result.model_copy(update={
                 "decision_status": ExecutionDecisionStatus.TECHNICAL_FAILURE,
@@ -485,7 +557,13 @@ def compare_response(
     _has_real_fields = any(
         key not in ("response_text", "response_values") for key in extracted
     )
-    if not _has_real_fields and len(response.strip()) < _TINY_UNPARSEABLE_LIMIT:
+    if (
+        not _has_real_fields
+        and len(response.strip()) < _TINY_UNPARSEABLE_LIMIT
+        # Same as the discovered-mapping path: trust the executor's
+        # keyword-based REJECTED verdict for tiny bodies (Phase 4.5 fix).
+        and result.decision_status != ExecutionDecisionStatus.REJECTED
+    ):
         return result.model_copy(update={
             "decision_status": ExecutionDecisionStatus.TECHNICAL_FAILURE,
             "evidence": {

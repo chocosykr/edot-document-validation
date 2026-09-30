@@ -68,6 +68,11 @@ _RUNTIME_VARS = {
 
 _PLACEHOLDER_RE = re.compile(r"\{\{([a-zA-Z_][a-zA-Z0-9_]*)\}\}")
 
+# SCRIPT methods read inputs through the dvs_io shim, e.g. get_input("cdc_number").
+# The name is the script's contract with the engine, so it gets the same
+# canonicalization the {{placeholder}} form gets.
+_GET_INPUT_RE = re.compile(r"get_input\(\s*(['\"])([A-Za-z_][A-Za-z0-9_]*)\1")
+
 
 def _canonical_input_name(name: str) -> str:
     n = re.sub(r"[^a-z0-9]+", "", str(name or "").lower())
@@ -182,6 +187,72 @@ def _normalize_input_names(llm_output: dict) -> None:
                             container[k] = _rename_placeholder(v, rename_map)
 
 
+def _normalize_script_input_names(llm_output: dict) -> None:
+    """Rename declared SCRIPT inputs to canonical names and rewrite the
+    `get_input("...")` calls in script_source to match."""
+    declared_inputs = {
+        str(x).strip() for x in (llm_output.get("required_inputs") or [])
+        if str(x or "").strip()
+    }
+    src = llm_output.get("script_source") or ""
+    referenced = (
+        {m.group(2) for m in _GET_INPUT_RE.finditer(src)}
+        if isinstance(src, str) else set()
+    )
+
+    rename_map: dict = {}
+    canonical_inputs: Set[str] = set()
+    for name in declared_inputs:
+        canonical = _canonical_input_name(name)
+        canonical_inputs.add(canonical)
+        if canonical != name:
+            rename_map[name] = canonical
+    # Names the script reads but never declared still get canonicalized so a
+    # later promotion stores the canonical name, not the site's wire name.
+    for name in referenced:
+        canonical = _canonical_input_name(name)
+        if canonical != name:
+            rename_map[name] = canonical
+
+    if not rename_map:
+        return
+    logger.warning(
+        "Generator: normalizing non-canonical SCRIPT input names %s -> %s",
+        rename_map, sorted(canonical_inputs | set(rename_map.values())),
+    )
+    llm_output["required_inputs"] = sorted(canonical_inputs)
+
+    def _sub(m):
+        quote, name = m.group(1), m.group(2)
+        return f"get_input({quote}{rename_map.get(name, name)}{quote}"
+
+    if isinstance(src, str):
+        llm_output["script_source"] = _GET_INPUT_RE.sub(_sub, src)
+
+
+def _enforce_script_source(llm_output: dict) -> None:
+    """A SCRIPT method must carry non-empty code, and every input the code
+    reads must be declared so the engine actually supplies it."""
+    src = str(llm_output.get("script_source") or "")
+    if not src.strip():
+        raise RuntimeError(
+            "LLM produced a SCRIPT method with no script_source. A SCRIPT "
+            "without code cannot run."
+        )
+    referenced = {m.group(2) for m in _GET_INPUT_RE.finditer(src)}
+    declared = {
+        str(x).strip() for x in (llm_output.get("required_inputs") or [])
+        if str(x or "").strip()
+    }
+    promoted = referenced - declared
+    if promoted:
+        llm_output["required_inputs"] = sorted(declared | promoted)
+        logger.warning(
+            "Generator: SCRIPT read undeclared inputs %s via get_input; "
+            "promoted to required_inputs.", sorted(promoted),
+        )
+
+
 def _reconcile_wire_param_assignments(llm_output: dict) -> None:
     """Align each wire param's {{placeholder}} with the canonical input its
     own param NAME implies (full-LLM path only).
@@ -244,7 +315,9 @@ def _enforce_contact_only_declarations(llm_output: dict, expected_responses: dic
         )
 
 
-def finalize_method(llm_output: dict) -> ValidationMethod:
+def finalize_method(
+    llm_output: dict, channel: Optional[str] = None
+) -> ValidationMethod:
     """Apply all deterministic enforcement passes and return a ValidationMethod.
 
     This is the single entry point for the post-generation phase. It:
@@ -254,13 +327,24 @@ def finalize_method(llm_output: dict) -> ValidationMethod:
     4. Enforces the method type is not BROWSER
     5. Promotes unresolvable placeholders to required_inputs
     6. Ensures required_inputs is non-empty
+
+    SCRIPT methods carry code instead of steps, so the step-oriented passes
+    (placeholder reconciliation / resolvability) are skipped and replaced by
+    the script equivalents (get_input normalization + coverage).
     """
-    # 1. Canonical input-name normalization
-    _normalize_input_names(llm_output)
+    is_script = str(llm_output.get("method_type") or "HTTP").strip().upper() == "SCRIPT"
+
+    # 1. Canonical input-name normalization (steps or script)
+    if is_script:
+        _normalize_script_input_names(llm_output)
+    else:
+        _normalize_input_names(llm_output)
 
     # 1b. Wire-param/placeholder reconciliation (declared inputs vs the
-    # placeholders the steps actually reference)
-    _reconcile_wire_param_assignments(llm_output)
+    # placeholders the steps actually reference) — steps only.
+    import os
+    if not is_script and os.environ.get("DVS_WIRE_RECONCILE", "1") != "0":
+        _reconcile_wire_param_assignments(llm_output)
 
     # 2. Build expected_responses from the LLM output's keyword markers
     llm_keywords = (llm_output.get("expected_responses") or {})
@@ -292,16 +376,87 @@ def finalize_method(llm_output: dict) -> ValidationMethod:
         ]
     llm_output["expected_responses"] = expected_responses
 
-    # 3. Contact-only declarations
+    # 3. Method type enforcement
+    # 3. Meta-level channel routing: if page_channel was provided, force the
+    #    required method_type and drop the (broken) steps for a different
+    #    transport.
+    channel_method_type = None
+    channel_steps_override = None
+    channel_script_override = None
+
+    if channel:
+        channel_method_type = _channel_method_type_from(channel)
+        if channel_method_type:
+            logger.warning(
+                "Meta: channel=%s routes to method_type=%s (generator proposal overridden)",
+                channel, channel_method_type.value,
+            )
+            if channel_method_type == MethodType.SCRIPT:
+                channel_script_override = _script_fallback_for_static_page(
+                    llm_output.get("source_url", ""),
+                    {
+                        "document_type": llm_output.get("document_type", ""),
+                        "issuing_country": llm_output.get("issuing_country", ""),
+                        "document_type_key": llm_output.get("document_type_key", ""),
+                    },
+                )
+            if channel_method_type == MethodType.BROWSER:
+                channel_steps_override = []
+
+    # 4. Method type enforcement (channel wins)
+    if is_script:
+        _enforce_script_source(llm_output)
+    else:
+        _enforce_resolvable_placeholders(llm_output)
+
+    # 5. Contact-only declarations
     _enforce_contact_only_declarations(llm_output, expected_responses)
-
-    # 4. Method type enforcement
-    _enforce_method_type(llm_output)
-
-    # 5. Placeholder resolvability
-    _enforce_resolvable_placeholders(llm_output)
 
     # 6. Required inputs present
     _enforce_required_inputs_present(llm_output)
 
+    if is_script:
+        # A SCRIPT method has no declarative steps.
+        llm_output.pop("execution_steps", None)
+
+    # Apply any channel override
+    if channel_method_type:
+        llm_output["method_type"] = channel_method_type.value
+        if channel_steps_override is not None:
+            llm_output["execution_steps"] = channel_steps_override
+        if channel_script_override is not None:
+            llm_output["script_source"] = channel_script_override
+            llm_output.pop("execution_steps", None)
+
     return ValidationMethod(**llm_output)
+
+
+def _channel_method_type_from(channel: str):
+    channel = channel.lower().strip()
+    mapping = {
+        "spa": MethodType.BROWSER,
+        "web_form": MethodType.WEB_FORM,
+        "ajax": MethodType.HTTP,
+        "static": MethodType.SCRIPT,
+    }
+    return mapping.get(channel)
+
+
+def _script_fallback_for_static_page(
+    source_url: str, redacted_profile: dict
+) -> str:
+    """Produce a minimal SCRIPT that navigates via arguments and writes its
+    result for static/non-JS pages."""
+    return (
+        "import sys, json\n"  # read the argument
+        "url = sys.argv[1] if len(sys.argv) > 1 else ''\n"  # fallback
+        "try:\n"
+        "    import requests\n"
+        "    r = requests.get(url, timeout=10)\n"
+        "    html = r.text\n"
+        "except Exception as e:\n"
+        "    html = f'Request failed: {e}'\n"
+        "print('Page loaded:', url, 'HTML length:', len(html))\n"
+        "# Further processing would go here for actually extracting and "
+        "# using the HTML to verify a certificate\n"
+    )

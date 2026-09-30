@@ -1,0 +1,132 @@
+Selected: InputFiles/INDOS (20).pdf
+
+[1/4] Running OCR...
+INFO:ocr.client:OCR cache hit for 9febed3151d6
+[2/4] Extracting and redacting...
+       Lookup credentials captured in memory (never persisted).
+[3/4] Running validation engine...
+INFO:engine.validation_engine:Starting validation — country='INDIA' doc_type='INDOS Certificate'
+INFO:engine.validation_engine:No active method found. Checking confirmed source database.
+INFO:engine.validation_engine:Found 1 source(s) in DB. Generating candidate method.
+INFO:generation.generator:XHR extraction gate: source_url=http://220.156.189.33/esamudraUI/jsp/examination/checker/PP_IndosChecker.jsp page_structure_present=True inline_js_present=True
+INFO:generation.xhr_contract:XHR extractor success: {"endpoint": "http://220.156.189.33/esamudraUI/checkerajaxservlet", "verb": "POST", "param_location": "query", "dynamic_params": ["txtNo", "dob", "searchType"], "static_params": {"processId": "PPIndosCheck"}}
+INFO:generation.generator:XHR extractor result: source_url=http://220.156.189.33/esamudraUI/jsp/examination/checker/PP_IndosChecker.jsp xhr_contract={'endpoint': 'http://220.156.189.33/esamudraUI/checkerajaxservlet', 'verb': 'POST', 'param_location': 'query', 'dynamic_params': ['txtNo', 'dob', 'searchType'], 'static_params': {'processId': 'PPIndosCheck'}}
+INFO:utils.llm_client:LLM call: model='openai/gpt-oss-120b' endpoint='https://api.groq.com/openai/v1/chat/completions' frontier=True
+
+[DEBUG] Narrow mapping LLM output:
+{
+  "param_mapping": {
+    "txtNo": "{{document_number}}",
+    "dob": "{{date_of_birth}}",
+    "searchType": null
+  },
+  "required_inputs": [
+    "document_number",
+    "date_of_birth",
+    "document_type_key"
+  ],
+  "workflow_params": {
+    "searchType": "{{document_type_key}}"
+  }
+}
+
+INFO:validation.validator:  [Attempt 1/3] Test 'structural_check' PASSED.
+INFO:validation.validator:Method M_71943D20 v1 passed validation.
+INFO:engine.validation_engine:Candidate M_71943D20 passed validation. Executing.
+INFO:engine.validation_engine:Discovering response field mapping for method M_71943D20
+INFO:validation.response_mapping:discover_field_mapping: asking LLM to map 1 response fields to 4 profile fields
+INFO:utils.llm_client:LLM call: model='openai/gpt-oss-120b' endpoint='https://api.groq.com/openai/v1/chat/completions' frontier=True
+INFO:validation.response_mapping:discover_field_mapping result: 0 text mappings, 0 image fields, 1 unmapped
+WARNING:engine.validation_engine:Discovered mapping has no usable fields for method M_71943D20
+
+[4/4] Generating report...
+Report saved to: ./discovery_report_INDOS (20)_20260930_124914.md
+
+--- REDACTED PROFILE ---
+{
+  "document_type": "INDOS Certificate",
+  "document_type_key": "INDOS",
+  "issuing_organization": "Lal Bahadur Shastri College of Advanced Maritime Studies & Research",
+  "issuing_country": "INDIA",
+  "authorities": {
+    "issuing_authority": null,
+    "administering_authority": null,
+    "flag_state": "India"
+  },
+  "document_holder": {
+    "name": "[PERSON_NAME]",
+    "date_of_birth": "[DATE_OF_BIRTH]"
+  },
+  "document_numbers": [
+    "[DOCUMENT_NUMBER]"
+  ],
+  "issue_date": "19-NOV-09",
+  "expiry_date": null,
+  "identifying_fields": {
+    "address": "[ADDRESS]",
+    "city": "[CITY]",
+    "state": "[STATE]",
+    "postal_code": "[POSTAL_CODE]",
+    "phone": "[PHONE]",
+    "identifying_characteristics": null
+  },
+  "missing_or_unclear_fields": [
+    "cdc_number",
+    "passport_number",
+    "serial_number"
+  ],
+  "inconsistencies": [],
+  "source_discovery_hints": [],
+  "redaction_summary": {
+    "fields_redacted": [
+      "document_holder.name",
+      "document_holder.date_of_birth",
+      "address",
+      "city",
+      "state",
+      "postal_code",
+      "phone",
+      "document_numbers[0]",
+      "cdc_number",
+      "passport_number"
+    ],
+    "pii_present": true
+  }
+}
+
+--- VALIDATION DECISION ---
+{
+  "document_result": "VALID",
+  "evidence_quality": "HIGH",
+  "decision_status": "VERIFIED",
+  "evidence": {
+    "http_status": 200,
+    "response_length": 1641,
+    "method_type": "HTTP",
+    "comparison": "field_match",
+    "field_scores": {
+      "document_number": 100.0,
+      "date_of_birth": 100.0,
+      "full_name": 100.0
+    },
+    "extracted_fields": {
+      "search result": "search result",
+      "name": "anup kamboj",
+      "date of birth": "07-sep-1992",
+      "indos no.": "09nl5250",
+      "passport no.": "za106622 *",
+      "passport issue date": "11-aug-2025 *",
+      "passport valid to": "10-aug-2035 *",
+      "cdc no.": "mum 179416",
+      "cdc issue date": "07-apr-2020",
+      "cdc valid to": "06-apr-2030",
+      "cdc issue place": "mumbai"
+    }
+  },
+  "method_id": "M_71943D20",
+  "method_type": "HTTP",
+  "source_url": "http://220.156.189.33/esamudraUI/checkerajaxservlet",
+  "raw_response": "<table  align='center'  width='85%' border='2'> <tr> <td><table  align='center'  width='100%' border='0'><td colspan='2' class='newStrip' height='20' align='center' border='1'><b>Search Result </b></td></tr><tr><td  class='rowcolorTD' width='30%'><b>Name</b></td></td><td  class='rowcolorTD' width='70%'>ANUP KAMBOJ</td></tr><tr><td  class='rowcolor1' ><b>Date of Birth </b></td></td><td  class='rowcolor1'>07-SEP-1992</td></tr><tr><td  class='rowcolorTD' ><b>INDoS No.</b></td></td><td  class='rowcolorTD' >09NL5250</td></tr><tr><td  class='rowcolor1' ><b>Passport No.</b></td></td><td  class='rowcolor1' >ZA106622 <span class='textRed'>*</span></td></tr><tr><td  class='rowcolorTD' ><b>Passport Issue Date</b></td></td><td  class='rowcolorTD' >11-AUG-2025 <span class='textRed'>*</span></td></tr><tr><td  class='rowcolor1' ><b>Passport Valid To</b></td></td><td  class='rowcolor1'>10-AUG-2035 <span class='textRed'>*</span></td></tr><tr><td  class='rowcolorTD' ><b>CDC No.</b></td></td><td  class='rowcolorTD' >MUM 179416</td></tr><tr><td  class='rowcolor1' ><b>CDC Issue Date</b></td></td><td  class='rowcolor1' >07-APR-2020</td></tr><tr><td  class='rowcolorTD' ><b>CDC Valid To</b></td></td><td  class='rowcolorTD' >06-APR-2030</td></tr><tr><td  class='rowcolor1' ><b>CDC Issue Place</b></td></td><td  class='rowcolor1' >MUMBAI</td></tr><tr><td colspan='2' class='rowcolorTD' >&nbsp;</td></tr><td  class='rowcolor1' colspan='2' height='20' align='left' ><b><span class='textRed'>*</span></b>&nbsp;Passport details are furnished by the applicant. It is subject to verification in due course.</font></b></td></tr></table></td></tr></table>",
+  "failure_reason": null,
+  "timestamp": "2026-09-30T07:19:14.919402+00:00"
+}

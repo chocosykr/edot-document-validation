@@ -171,9 +171,23 @@ def _fetch_page_structure(url: str) -> dict:
 
         summary.append("--- End JavaScript ---")
 
-    return {
+    has_inline_js = bool(full_js_text and full_js_text.strip())
+    has_custom_bundle = bool(external_custom_js)
+    has_endpoint_hints = bool(endpoint_hints)
+    has_call_hints = bool(call_hints)
+    is_modern_spa = bool(is_minified or is_too_long) and not has_endpoint_hints
+
+    result = {
         "summary": "\n".join(summary),
         "inline_js": full_js_text,
         "bundle_js": bundle_js,
         "workflow_options": workflow_options,
+        "channels": {
+            "has_inline_js": has_inline_js,
+            "has_custom_bundle": has_custom_bundle,
+            "has_endpoint_hints": has_endpoint_hints,
+            "has_call_hints": has_call_hints,
+            "is_modern_spa": is_modern_spa,
+        },
     }
+    return result

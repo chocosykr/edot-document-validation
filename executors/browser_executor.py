@@ -46,8 +46,16 @@ from real response content (field_match methods stay UNCERTAIN here so the
 engine's compare_response() decides).
 
 Privacy:
-- Screenshots live in memory only and are never written to disk.
+- Screenshots of the page ARE written to the mounted workspace (next to
+  output.json) as a debugging artifact: the rendered page is what a human or
+  the healing loop needs to see, and element naming cannot convey it. They
+  are captured ONLY while no credential has been typed into the page
+  (`_credentials_filled` gate), so a saved image can never contain a value the
+  rest of the system treats as a placeholder. The runner moves them to the
+  durable project evidence directory before deleting the temp dir.
 - Logs never contain credential values (FILL logs field names only).
+- DOM / network / console diagnostics are text and are scrubbed host-side
+  before any model sees them.
 - LLM config comes from the shared local/frontier toggle
   (utils/llm_client.get_llm_config): endpoint is always LLM_URL, and LLM_MODEL
   is the switch. No second endpoint and no hardcoded model name here.
@@ -63,6 +71,16 @@ import sys
 import time
 import urllib.request
 from typing import Any, Dict, List, Optional, Tuple
+
+# --- Diagnostics for the healing loop -----------------------------------------
+# The step loop can fail on structure the DOM does not reveal (a renamed
+# field, a cookie wall, a submit that renders an error panel). These bounds
+# keep the bundle small enough to hand to a model.
+DOM_SNAPSHOT_LIMIT = 20_000
+NETWORK_TRACE_LIMIT = 40
+CONSOLE_MESSAGE_LIMIT = 30
+CONSOLE_TEXT_LIMIT = 300
+SCREENSHOT_PREFIX = "screenshot"
 
 
 # ---------------------------------------------------------------------------
@@ -192,6 +210,52 @@ except ImportError:
 
 INPUT_PATH = "input.json"
 OUTPUT_PATH = "output.json"
+
+
+def _new_diagnostics() -> Dict[str, Any]:
+    return {"dom": "", "network": [], "console": [], "screenshots": []}
+
+
+def _save_gated_screenshot(page: Page, diagnostics: Dict[str, Any],
+                          attempt: int) -> None:
+    """Write the current page as PNG — PRE-FILL ONLY.
+
+    Gated on purpose: once a FILL has run the page renders a real credential,
+    and an image cannot be scrubbed the way text can. Called only while
+    ``_credentials_filled`` is false, so the saved file is safe to hand to a
+    model or a human.
+    """
+    try:
+        png = page.screenshot(type="png", full_page=False, timeout=8_000,
+                              animations="disabled")
+    except Exception as e:
+        print(f"[browser] screenshot failed: {e}", file=sys.stderr)
+        return
+    name = f"{SCREENSHOT_PREFIX}_a{attempt}.png"
+    try:
+        with open(name, "wb") as f:
+            f.write(png)
+    except Exception as e:
+        print(f"[browser] screenshot save failed: {e}", file=sys.stderr)
+        return
+    saved = diagnostics.setdefault("screenshots", [])
+    # The same attempt snapshots more than once (after navigation, and again
+    # after the step loop): the later state overwrites the file, so the name
+    # must only be listed once.
+    if name not in saved:
+        saved.append(name)
+        print(f"[browser] saved {name} (pre-fill page state)")
+
+
+def _snapshot_page(page: Page, diagnostics: Dict[str, Any], attempt: int,
+                   allow_screenshot: bool) -> None:
+    """Record DOM + network + console (+ a pre-fill screenshot) for healing."""
+    try:
+        diagnostics["dom"] = (page.content() or "")[:DOM_SNAPSHOT_LIMIT]
+    except Exception as e:
+        print(f"[browser] dom snapshot failed: {e}", file=sys.stderr)
+    if allow_screenshot:
+        _save_gated_screenshot(page, diagnostics, attempt)
 
 # --- LLM configuration -----------------------------------------------------------------
 # Vision calls go through the SHARED implementation in
@@ -650,12 +714,17 @@ _credentials_filled = False  # module-level so SOLVE_CAPTCHA's assert sees it
 
 
 def run_attempt(playwright, method: dict, inputs: Dict[str, str],
-                deadline: float, info: Dict[str, Any]) -> Tuple[str, str]:
+                deadline: float, info: Dict[str, Any],
+                diagnostics: Optional[Dict[str, Any]] = None,
+                attempt: int = 1) -> Tuple[str, str]:
     """Run the full step list once on a fresh browser.
 
     Mutates `info` in place as the attempt progresses, so diagnostics survive
-    exception paths. Returns (decision, raw_response). Raises CaptchaRetry /
-    ExecutionRetry / TerminalFailure; the caller owns the counters.
+    exception paths. `diagnostics` is shared across attempts by the caller so
+    evidence from a FAILED attempt is not lost when a later one runs.
+
+    Returns (decision, raw_response). Raises CaptchaRetry / ExecutionRetry /
+    TerminalFailure; the caller owns the counters.
     """
     global _credentials_filled
     _credentials_filled = False
@@ -671,12 +740,16 @@ def run_attempt(playwright, method: dict, inputs: Dict[str, str],
     info.setdefault("captcha_detected", False)
     info.setdefault("detection", "none")
     info.setdefault("solve", "skipped")
+    if diagnostics is None:
+        diagnostics = _new_diagnostics()
+    info["diagnostics"] = diagnostics
     last_status: Optional[int] = None
 
     browser = playwright.chromium.launch(
         headless=True,
         args=["--no-sandbox", "--disable-dev-shm-usage", "--disable-gpu"],
     )
+    page = None
     try:
         context = browser.new_context(user_agent="DVS-Browser/1.0")
         page = context.new_page()
@@ -689,9 +762,40 @@ def run_attempt(playwright, method: dict, inputs: Dict[str, str],
                 if resp.request.resource_type in ("document", "xhr", "fetch"):
                     nonlocal last_status
                     last_status = resp.status
+                    if len(diagnostics["network"]) < NETWORK_TRACE_LIMIT:
+                        try:
+                            headers = resp.headers or {}
+                        except Exception:
+                            headers = {}
+                        diagnostics["network"].append({
+                            "method": resp.request.method,
+                            "url": resp.url,
+                            "status": resp.status,
+                            "resource_type": resp.request.resource_type,
+                            "content_type": headers.get("content-type", ""),
+                        })
             except Exception:
                 pass
+
+        def _note_console(text: str) -> None:
+            if len(diagnostics["console"]) < CONSOLE_MESSAGE_LIMIT:
+                diagnostics["console"].append(text[:CONSOLE_TEXT_LIMIT])
+
+        def _on_console(msg):
+            try:
+                _note_console(f"{getattr(msg, 'type', '') or 'log'}: {msg.text or ''}")
+            except Exception:
+                pass
+
+        def _on_pageerror(err):
+            try:
+                _note_console(f"pageerror: {err}")
+            except Exception:
+                pass
+
         page.on("response", _on_response)
+        page.on("console", _on_console)
+        page.on("pageerror", _on_pageerror)
 
         final_body = ""
 
@@ -715,6 +819,10 @@ def run_attempt(playwright, method: dict, inputs: Dict[str, str],
                 except Exception:
                     pass  # not all pages have inputs; content() decides later
                 page.wait_for_timeout(SETTLE_WAIT_MS)
+                # First look at the real page: before any credential is typed,
+                # so the saved screenshot is safe to hand to a model.
+                _snapshot_page(page, diagnostics, attempt,
+                               allow_screenshot=not _credentials_filled)
 
             elif action == "SOLVE_CAPTCHA":
                 # Before solving: no FILL may have run (assert), and the gate
@@ -785,6 +893,11 @@ def run_attempt(playwright, method: dict, inputs: Dict[str, str],
                 if last_status is not None and last_status >= 400:
                     raise ExecutionRetry(f"submit response HTTP {last_status}")
 
+                # The RESULT page is the most valuable evidence there is, but
+                # a FILL has run by now, so no screenshot is taken here — the
+                # DOM/network/console text carries it instead.
+                _snapshot_page(page, diagnostics, attempt,
+                               allow_screenshot=not _credentials_filled)
                 decision = decide(final_body, expected)
                 info["http_status"] = last_status
                 return decision, _compact_response(final_body)
@@ -795,8 +908,16 @@ def run_attempt(playwright, method: dict, inputs: Dict[str, str],
         final_body = page.content()
         if captcha_error_visible(page):
             raise CaptchaRetry("CAPTCHA-error signal visible (pre-submit check)")
+        _snapshot_page(page, diagnostics, attempt,
+                       allow_screenshot=not _credentials_filled)
         return decide(final_body, expected), _compact_response(final_body)
     finally:
+        # A failure is where the healing loop needs the page most, so capture
+        # whatever the browser still holds before it is closed. The screenshot
+        # stays gated: if a credential was typed, only text is recorded.
+        if page is not None and sys.exc_info()[0] is not None:
+            _snapshot_page(page, diagnostics, attempt,
+                           allow_screenshot=not _credentials_filled)
         browser.close()
 
 
@@ -909,6 +1030,10 @@ def main():
     decision = "TECHNICAL_FAILURE"
     final_body = ""
     info: Dict[str, Any] = {}
+    # One diagnostics object for the WHOLE run, shared across attempts: a
+    # failed attempt's page state is exactly what the healing loop needs, and
+    # it must not be discarded when a later attempt overwrites `attempt_info`.
+    diagnostics = _new_diagnostics()
 
     if not _PLAYWRIGHT_IMPORTABLE:
         # Playwright missing -> no browser execution is possible. This is a
@@ -938,7 +1063,8 @@ def main():
             }
             try:
                 decision, final_body = run_attempt(
-                    playwright, method, inputs, deadline, attempt_info)
+                    playwright, method, inputs, deadline, attempt_info,
+                    diagnostics=diagnostics, attempt=attempts)
                 info = attempt_info
                 counter = "none"
                 print(f"[browser] attempt {attempts} completed: decision={decision}")
@@ -992,6 +1118,10 @@ def main():
             "elapsed_seconds": elapsed,
             **({"terminal_reason": info["terminal_reason"]} if info.get("terminal_reason") else {}),
             **({"deadline_exceeded": True} if info.get("deadline_exceeded") else {}),
+            # The evidence bundle the healing loop reads: the rendered page
+            # (DOM + console + network) and the names of any pre-fill
+            # screenshots saved beside output.json.
+            "browser_diagnostics": diagnostics,
         },
         "raw_response": _compact_response(final_body) if final_body else None,
     }

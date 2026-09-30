@@ -95,6 +95,10 @@ _QUALITY_MAP: Dict[MethodType, EvidenceQuality] = {
     MethodType.QR_URL:   EvidenceQuality.MEDIUM,
     MethodType.BROWSER:  EvidenceQuality.MEDIUM,
     MethodType.MANUAL:   EvidenceQuality.LOW,
+    # SCRIPT methods carry LLM-authored transport code; the harness no longer
+    # reads the site itself, so treat the evidence as corroborable rather than
+    # authoritative until the decider policy is extended (Phase 4.5).
+    MethodType.SCRIPT:   EvidenceQuality.MEDIUM,
 }
 
 

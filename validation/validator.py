@@ -5,7 +5,7 @@ from typing import List, Optional
 
 from execution.docker_runner import DockerMethodRunner
 from execution.models import ExecutionRequest, ExecutionDecisionStatus
-from registry.models import ValidationMethod, MethodStatus
+from registry.models import ValidationMethod, MethodStatus, MethodType
 from registry.repository import MethodRegistry
 from validation.models import (
     TestCase,
@@ -14,6 +14,7 @@ from validation.models import (
     AttemptOutcome,
     ValidationReportStatus,
 )
+from validation.coverage import missing_required_inputs
 from validation.field_comparison import compare_response
 from validation.healing import escalate_improvement
 
@@ -28,6 +29,14 @@ logger = logging.getLogger(__name__)
 # dead code — the "before final attempt" condition can never hold when only
 # one attempt exists.
 def _max_attempts() -> int:
+    env = getattr(config, "VALIDATION_MAX_ATTEMPTS", None)
+    if env is not None:
+        try:
+            value = int(env)
+            if 1 <= value <= 6:
+                return value
+        except (TypeError, ValueError):
+            pass
     raw = os.getenv("VALIDATION_MAX_ATTEMPTS", "3")
     try:
         value = int(raw)
@@ -38,6 +47,17 @@ def _max_attempts() -> int:
 MAX_ATTEMPTS_PER_TEST_CASE = _max_attempts()
 
 
+def _execution_body(method: ValidationMethod) -> tuple:
+    """The parts of a method that decide HOW it is executed.
+
+    Compared before/after a healing pass to detect an adopted rewrite without
+    persisting a no-op update on every failure.
+    """
+    return (
+        method.method_type,
+        json.dumps(method.execution_steps or [], sort_keys=True, default=str),
+        method.script_source or "",
+    )
 
 
 class MethodValidator:
@@ -108,22 +128,10 @@ class MethodValidator:
                 method.expected_responses = expected
 
         # Structural coverage pre-check: every required input must actually
-        # be consumed by some {{placeholder}} in the execution steps. (Live
-        # case, 2026-09-29: a pinning bug pinned the document-number param to
-        # the literal "Indos" while {{document_number}} appeared nowhere in
-        # the steps — the known-fake probe then passed byte-identically for
-        # any input, and genuine documents were confidently REJECTED.) This
-        # is a hard-wired invariant, not an LLM heuristic.
-        import re as _re
-        steps_body = _re.sub(
-            r"\s+",
-            " ",
-            json.dumps(method.execution_steps or [], default=str),
-        )
-        missing = [
-            f for f in (method.required_inputs or [])
-            if "{{" + f + "}}" not in steps_body
-        ]
+        # be consumed by the execution body. Runs BEFORE any probe or healing
+        # so a method that cannot consume its own inputs is refused outright
+        # rather than "fixed" by trial (see _missing_required_inputs).
+        missing = missing_required_inputs(method)
         if missing:
             report.status = ValidationReportStatus.ERROR
             report.failure_reason = (
@@ -175,6 +183,42 @@ class MethodValidator:
     # ------------------------------------------------------------------
     # Internal helpers
     # ------------------------------------------------------------------
+
+    def _persist_execution_body(self, method: ValidationMethod) -> None:
+        """Save an adopted healing rewrite on the existing registry row.
+
+        Status and version are deliberately untouched: re-registering the
+        whole method would write back this object's stale pre-validation
+        status over an ACTIVE row.
+        """
+        if not self.registry:
+            return
+        # The escalation clears execution_steps before the agent re-authors
+        # them. If the agent produced nothing, the method is deliberately
+        # unrunnable — keep the previous row rather than overwrite a broken
+        # method with an empty one.
+        if not (method.execution_steps or (method.script_source or "").strip()):
+            logger.info(
+                "Not persisting healed body for %s: no executable steps were "
+                "adopted (leaving the previous row in place).",
+                method.method_id,
+            )
+            return
+        try:
+            self.registry.update_execution(
+                method.method_id,
+                method_type=method.method_type,
+                execution_steps=method.execution_steps or [],
+                script_source=method.script_source,
+            )
+            logger.info(
+                "Persisted healed execution body for %s (method_type=%s).",
+                method.method_id, method.method_type.value,
+            )
+        except Exception as e:
+            logger.warning(
+                "Failed to persist healed body for %s: %s", method.method_id, e
+            )
 
     def _run_test_case(
         self,
@@ -341,11 +385,19 @@ class MethodValidator:
             # failures escalate to the full agentic tool-use loop.
             if outcome != AttemptOutcome.PASSED and attempt_num < MAX_ATTEMPTS_PER_TEST_CASE:
                 note = None
+                body_before = _execution_body(method)
                 note = escalate_improvement(
                     method, attempt, tc, self.runner, self.executor_script_path,
                     attempt_num, MAX_ATTEMPTS_PER_TEST_CASE,
                 )
                 attempt.improvement_applied = note
+                # The healing ladder may have rewritten the method — including
+                # escalating HTTP/SCRIPT -> BROWSER. The registry row was
+                # written before validation, so an adopted rewrite has to be
+                # persisted or it dies with this process and the next run
+                # regenerates the same broken method.
+                if _execution_body(method) != body_before:
+                    self._persist_execution_body(method)
 
             report.attempts.append(attempt)
 

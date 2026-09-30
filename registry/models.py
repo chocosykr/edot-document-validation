@@ -15,6 +15,7 @@ class MethodType(str, Enum):
     BROWSER = "BROWSER"
     QR_URL = "QR_URL"
     MANUAL = "MANUAL"
+    SCRIPT = "SCRIPT"
 
 
 CURRENT_METHOD_SCHEMA = "field-comparison-v3"
@@ -29,6 +30,13 @@ class ValidationMethod(BaseModel):
     source_url: str
     required_inputs: List[str] = Field(default_factory=list)
     execution_steps: List[Dict[str, Any]] = Field(default_factory=list)
+    # SCRIPT methods carry LLM-authored transport code instead of declarative
+    # steps. The script runs in the same Docker sandbox as every other
+    # executor and writes the same output.json contract; the harness still
+    # owns the verdict and evidence policy. Optional so all existing methods
+    # remain valid.
+    script_source: Optional[str] = None
+    script_runtime: str = "python3"
     expected_responses: Dict[str, Any] = Field(default_factory=dict)
     limitations: List[str] = Field(default_factory=list)
     status: MethodStatus = MethodStatus.TESTING

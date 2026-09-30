@@ -1,0 +1,133 @@
+Selected: InputFiles/SID Anup-1.pdf
+
+[1/4] Running OCR...
+INFO:ocr.client:OCR cache hit for 6f862e21bf57
+[2/4] Extracting and redacting...
+       Lookup credentials captured in memory (never persisted).
+[3/4] Running validation engine...
+INFO:engine.validation_engine:Starting validation — country='India' doc_type="Seafarer's Identity Document"
+INFO:engine.validation_engine:No active method found. Checking confirmed source database.
+INFO:engine.validation_engine:No doc-type-tagged source, but 2 same-country source(s) exist — attempting source reuse via page evidence.
+INFO:engine.validation_engine:Found 2 source(s) in DB. Generating candidate method.
+INFO:generation.generator:XHR extraction gate: source_url=http://220.156.189.33/esamudraUI/jsp/examination/checker/PP_IndosChecker.jsp page_structure_present=True inline_js_present=True
+INFO:generation.xhr_contract:XHR extractor success: {"endpoint": "http://220.156.189.33/esamudraUI/checkerajaxservlet", "verb": "POST", "param_location": "query", "dynamic_params": ["txtNo", "dob", "searchType"], "static_params": {"processId": "PPIndosCheck"}}
+INFO:generation.generator:XHR extractor result: source_url=http://220.156.189.33/esamudraUI/jsp/examination/checker/PP_IndosChecker.jsp xhr_contract={'endpoint': 'http://220.156.189.33/esamudraUI/checkerajaxservlet', 'verb': 'POST', 'param_location': 'query', 'dynamic_params': ['txtNo', 'dob', 'searchType'], 'static_params': {'processId': 'PPIndosCheck'}}
+INFO:utils.llm_client:LLM call: model='gemini/gemini-2.5-flash' endpoint='https://ai.edot-solutions.com/v1/chat/completions' frontier=True
+ERROR:utils.llm_client:Could not extract JSON from LLM response: ```json
+{
+  "param_mapping": {
+    "txtNo": "{{document_number}}",
+    "dob": "{{date_of_birth}}",
+    "searchType": "{{document_type_key}}"
+   immunotherapy
+  },
+  "required_inputs": [
+    "document_
+
+[DEBUG] Narrow mapping LLM output:
+null
+
+ERROR:engine.validation_engine:Method generation failed: Dispatch selector(s) ['searchType'] could not be pinned to any page option; refusing to generate a method that would submit incomplete requests.
+WARNING:engine.validation_engine:Generation from DB source failed (Method generation failed: Dispatch selector(s) ['searchType'] could not be pinned to any page option; refusing to generate a method that would submit incomplete requests.); falling through to discovery.
+INFO:engine.validation_engine:No DB source found. Running discovery agent.
+
+Generating search queries with LLM...
+[discovery] LLM call using model='gemini/gemini-2.5-flash'
+
+Searching: Directorate General of Shipping India SID verification portal
+Search failed: This request exceeds your plan's set usage limit. Please upgrade your plan or contact support@tavily.com
+
+Searching: DG Shipping Seafarer's Identity Document online check
+Search failed: This request exceeds your plan's set usage limit. Please upgrade your plan or contact support@tavily.com
+
+Searching: How to verify Indian Seafarer's Identity Document
+Search failed: This request exceeds your plan's set usage limit. Please upgrade your plan or contact support@tavily.com
+
+Searching: Directorate General of Shipping official website SID verification
+Search failed: This request exceeds your plan's set usage limit. Please upgrade your plan or contact support@tavily.com
+
+Searching: India maritime authority SID authenticity check
+Search failed: This request exceeds your plan's set usage limit. Please upgrade your plan or contact support@tavily.com
+
+Searching: DG Shipping SID verification procedure documentation
+Search failed: This request exceeds your plan's set usage limit. Please upgrade your plan or contact support@tavily.com
+
+Searching: Indian Seafarer's Identity Document verification guidelines
+Search failed: This request exceeds your plan's set usage limit. Please upgrade your plan or contact support@tavily.com
+
+Searching: Contact Directorate General of Shipping for SID verification
+Search failed: This request exceeds your plan's set usage limit. Please upgrade your plan or contact support@tavily.com
+[discovery] search returned nothing (8 error(s) across 8 queries) — falling back to the document's own source hints.
+
+[discovery] attempt 1/10: https://www.dgshipping.gov.in
+[discovery] rejected (deterministic): page could not be fetched (ConnectTimeout: HTTPSConnectionPool(host='www.dgshipping.gov.in', port=443): Max retries exceeded with url: / (Caused by ConnectTimeoutError(<HTTPSConnection(host='www.dgshipping.gov.in', port=443) at 0x7df187384380>, 'Connection to www.dgshipping.gov.in timed out. (connect timeout=20)')))
+
+[discovery] exhausted 1 attempt(s) without a valid page; returning no source (engine will report VALIDATION_UNAVAILABLE).
+
+[4/4] Generating report...
+Report saved to: ./discovery_report_SID Anup-1_20260930_125913.md
+
+--- REDACTED PROFILE ---
+{
+  "document_type": "Seafarer's Identity Document",
+  "document_type_key": "SID",
+  "issuing_organization": "Directorate General of Shipping",
+  "issuing_country": "India",
+  "authorities": {
+    "issuing_authority": "Directorate General of Shipping",
+    "administering_authority": null,
+    "flag_state": "India"
+  },
+  "document_holder": {
+    "name": "[PERSON_NAME]",
+    "date_of_birth": "[DATE_OF_BIRTH]"
+  },
+  "document_numbers": [
+    "[DOCUMENT_NUMBER]"
+  ],
+  "issue_date": "20 04 2021",
+  "expiry_date": "19 04 2031",
+  "identifying_fields": {
+    "nationality": "IND",
+    "place_of_birth": "KHURDI",
+    "sex": "M",
+    "identifying_characteristics": "SCAR ON RIGHT CHEEK",
+    "place_of_issue": "MUMBAI",
+    "issuing_authority_contact_location": "MUMBAI",
+    "issuing_authority_phone_number": "+91-22-22697971/72"
+  },
+  "missing_or_unclear_fields": [],
+  "inconsistencies": [],
+  "source_discovery_hints": [
+    "www.dgshipping.gov.in"
+  ],
+  "redaction_summary": {
+    "fields_redacted": [
+      "document_holder.name",
+      "document_holder.date_of_birth",
+      "document_numbers"
+    ],
+    "pii_present": true
+  }
+}
+
+--- VALIDATION DECISION ---
+{
+  "document_result": "UNKNOWN",
+  "evidence_quality": "NONE",
+  "decision_status": "TECHNICAL_FAILURE",
+  "evidence": {},
+  "method_id": null,
+  "method_type": null,
+  "source_url": null,
+  "raw_response": null,
+  "failure_reason": "Method generation failed: Dispatch selector(s) ['searchType'] could not be pinned to any page option; refusing to generate a method that would submit incomplete requests.",
+  "timestamp": "2026-09-30T07:28:43.848888+00:00"
+}
+
+[!] Technical Failure occurred. Scrubbed log written to agent_debug_log.json for external agent debugging.
+
+[?] Do you want to activate the Agentic Fallback Loop to automatically fix this issue?
+    (This will run the fallback agent on the configured model 'gemini/gemini-2.5-flash' and may consume credits.)
+Proceed? (y/n): [!] No input available; skipping the fallback loop.
+[!] Agentic Fallback Loop aborted.

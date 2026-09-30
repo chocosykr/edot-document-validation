@@ -1,5 +1,7 @@
 import json
 import logging
+import os
+import time
 from typing import TypedDict
 
 import requests
@@ -102,13 +104,33 @@ def extract_and_redact(ocr_result: dict) -> dict:
     log = logging.getLogger(__name__)
     content = None
     last_error: Exception | None = None
-    for attempt in range(1, 4):
-        response = requests.post(
-            config["url"],
-            headers=headers,
-            json=payload,
-            timeout=180
-        )
+    attempts = max(1, int(os.getenv("LLM_MAX_ATTEMPTS", "4")))
+    transient_status = {408, 409, 429, 500, 502, 503, 504}
+    for attempt in range(1, attempts + 1):
+        try:
+            response = requests.post(
+                config["url"],
+                headers=headers,
+                json=payload,
+                timeout=180,
+            )
+        except requests.RequestException as e:
+            # Transient transport failure — retry rather than crash the whole
+            # run. (Previously a provider 503 here aborted extraction.)
+            last_error = e
+            log.warning("Extraction attempt %d/%d transport error: %s", attempt, attempts, e)
+            time.sleep(min(30, 2 * attempt))
+            continue
+        if response.status_code in transient_status:
+            last_error = requests.HTTPError(
+                f"{response.status_code} {response.reason}", response=response
+            )
+            log.warning(
+                "Extraction attempt %d/%d transient HTTP %s; retrying.",
+                attempt, attempts, response.status_code,
+            )
+            time.sleep(min(30, 2 * attempt))
+            continue
         response.raise_for_status()
         result = response.json()
         try:
@@ -118,14 +140,13 @@ def extract_and_redact(ocr_result: dict) -> dict:
             last_error = e
             finish = (result.get("choices") or [{}])[0].get("finish_reason")
             log.warning(
-                "Extraction attempt %d/3 returned unusable content "
+                "Extraction attempt %d/%d returned unusable content "
                 "(finish_reason=%r, len=%r): %s",
-                attempt, finish, len(content or ""), e,
+                attempt, attempts, finish, len(content or ""), e,
             )
-            import time as _time
-            _time.sleep(2 * attempt)
+            time.sleep(2 * attempt)
     raise ValueError(
-        f"Extraction LLM returned no parsable content after 3 attempts: {last_error}"
+        f"Extraction LLM returned no parsable content after {attempts} attempts: {last_error}"
     )
 
 

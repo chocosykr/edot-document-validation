@@ -1,0 +1,155 @@
+Selected: InputFiles/SID Anup-1.pdf
+
+[1/4] Running OCR...
+INFO:ocr.client:OCR cache hit for 6f862e21bf57
+[2/4] Extracting and redacting...
+       Lookup credentials captured in memory (never persisted).
+[3/4] Running validation engine...
+INFO:engine.validation_engine:Starting validation — country='India' doc_type="Seafarers' Identity Document"
+INFO:engine.validation_engine:No active method found. Checking confirmed source database.
+INFO:engine.validation_engine:Found 1 source(s) in DB. Generating candidate method.
+INFO:generation.generator:XHR extraction gate: source_url=https://www.dgshippingbsid.in page_structure_present=True inline_js_present=False
+INFO:generation.bundle_contract:Bundle contract carries captcha params ['captcha', 'captchaId'] (endpoint=https://www.dgshippingbsid.in/api/captcha/refresh)
+INFO:generation.bundle_contract:Bundle contract extracted: GET https://www.dgshippingbsid.in/seafarer/sid/verify params=['inputvalue'] (score=10)
+INFO:generation.generator:Bundle-based XHR contract accepted (SPA shell page): https://www.dgshippingbsid.in/seafarer/sid/verify
+INFO:generation.generator:XHR extractor result: source_url=https://www.dgshippingbsid.in xhr_contract={'endpoint': 'https://www.dgshippingbsid.in/seafarer/sid/verify', 'verb': 'GET', 'param_location': 'query', 'dynamic_params': ['inputvalue'], 'static_params': {}, 'captcha_params': {'captcha': '{{captcha_text}}', 'captchaId': '{{captcha_id}}'}, 'captcha_endpoint': 'https://www.dgshippingbsid.in/api/captcha/refresh'}
+INFO:utils.llm_client:LLM call: model='AI_Local' endpoint='https://ai.edot-solutions.com/v1/chat/completions' frontier=False
+
+[DEBUG] Narrow mapping LLM output:
+{
+  "param_mapping": {
+    "inputvalue": "{{document_number}}"
+  },
+  "required_inputs": [
+    "document_number"
+  ],
+  "workflow_params": {}
+}
+
+INFO:validation.validator:  [Attempt 1/3] Test 'structural_check' PASSED.
+INFO:validation.validator:Method M_C15E0132 v1 passed validation.
+INFO:engine.validation_engine:Candidate M_C15E0132 passed validation. Executing.
+INFO:engine.validation_engine:Discovering response field mapping for method M_C15E0132
+INFO:validation.response_mapping:discover_field_mapping: asking LLM to map 15 response fields to 10 profile fields
+INFO:utils.llm_client:LLM call: model='AI_Local' endpoint='https://ai.edot-solutions.com/v1/chat/completions' frontier=False
+INFO:validation.response_mapping:discover_field_mapping result: 10 text mappings, 2 image fields, 5 unmapped
+INFO:engine.validation_engine:Stored discovered field mapping for method M_C15E0132: 10 text mappings, 2 image fields
+INFO:utils.llm_client:vision_call: model='AI_Local' endpoint='https://ai.edot-solutions.com/v1/chat/completions' frontier=False
+WARNING:utils.llm_client:vision_call failed: HTTP Error 400: Bad Request
+INFO:utils.llm_client:vision_call: model='AI_Local' endpoint='https://ai.edot-solutions.com/v1/chat/completions' frontier=False
+WARNING:utils.llm_client:vision_call failed: HTTP Error 400: Bad Request
+
+[4/4] Generating report...
+Report saved to: ./discovery_report_SID Anup-1_20260930_120720.md
+
+--- REDACTED PROFILE ---
+{
+  "document_type": "Seafarers' Identity Document",
+  "document_type_key": "SID",
+  "issuing_organization": "Directorate General of Shipping",
+  "issuing_country": "India",
+  "authorities": {
+    "issuing_authority": "MUMBAI",
+    "administering_authority": null,
+    "flag_state": "India"
+  },
+  "document_holder": {
+    "name": "[PERSON_NAME]",
+    "date_of_birth": "[DATE_OF_BIRTH]"
+  },
+  "document_numbers": [
+    "[DOCUMENT_NUMBER]"
+  ],
+  "issue_date": "20 04 2021",
+  "expiry_date": "19 04 2031",
+  "identifying_fields": {
+    "nationality": "IND",
+    "place_of_birth": "KHURDI",
+    "sex": "M",
+    "identifying_characteristics": "SCAR ON RIGHT CHEEK",
+    "place_of_issue": "MUMBAI"
+  },
+  "missing_or_unclear_fields": [],
+  "inconsistencies": [],
+  "source_discovery_hints": [
+    "www.dgshipping.gov.in"
+  ],
+  "redaction_summary": {
+    "fields_redacted": [
+      "name",
+      "date_of_birth",
+      "document_number"
+    ],
+    "pii_present": true
+  }
+}
+
+--- VALIDATION DECISION ---
+{
+  "document_result": "VALID",
+  "evidence_quality": "HIGH",
+  "decision_status": "VERIFIED",
+  "evidence": {
+    "http_status": 200,
+    "response_length": 433086,
+    "method_type": "HTTP",
+    "comparison": "discovered_llm_judge",
+    "field_scores": {
+      "expiry_date←dateOfExpiry": 100.0,
+      "identifying_characteristics←identificationMark": 100.0,
+      "sex←sex": 100.0,
+      "issue_date←dateOfIssue": 100.0,
+      "document_number←sidNumber": 100.0,
+      "place_of_issue←placeOfIssue": 100.0,
+      "nationality←nationality": 66.66666666666667,
+      "place_of_birth←birthplace": 100.0,
+      "date_of_birth←dob": 100.0,
+      "full_name←name": 100.0,
+      "image:signature": 0,
+      "image:photo": 0
+    },
+    "image_results": {
+      "signature": {
+        "score": 0,
+        "description": "vision_call failed",
+        "plausible": false
+      },
+      "photo": {
+        "score": 0,
+        "description": "vision_call failed",
+        "plausible": false
+      }
+    },
+    "field_mapping_used": {
+      "text_mappings": {
+        "dateOfExpiry": "expiry_date",
+        "identificationMark": "identifying_characteristics",
+        "sex": "sex",
+        "dateOfIssue": "issue_date",
+        "sidNumber": "document_number",
+        "placeOfIssue": "place_of_issue",
+        "nationality": "nationality",
+        "birthplace": "place_of_birth",
+        "dob": "date_of_birth",
+        "name": "full_name"
+      },
+      "image_fields": {
+        "signature": "bmp",
+        "photo": "jpeg"
+      },
+      "unmapped_response_fields": [
+        "mrz3",
+        "mrz2",
+        "mrz1",
+        "fileType",
+        "status"
+      ]
+    }
+  },
+  "method_id": "M_C15E0132",
+  "method_type": "HTTP",
+  "source_url": "https://www.dgshippingbsid.in/seafarer/sid/verify",
+  "raw_response": "{\"dateOfExpiry\": \"19-04-2031\", \"identificationMark\": \"SCAR ON RIGHT CHEEK\", \"signature\": \"Qk0WlAQAAAAAADYAAAAoAAAA9AEAAJYAAAABACAAAAAAAAAAAADEDgAAxA4AAAAAAAAAAAAA////gP//////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////\", \"sex\": \"m\", \"photo\": \"/9j/4AAQSkZJRgABAQEAAAAAAAD/2wBDAAYEBQYFBAYGBQYHBwYIChAKCgkJChQODwwQFxQYGBcUFhYaHSUfGhsjHBYWICwgIyYnKSopGR8tMC0oMCUoKSj/2wBDAQcHBwoIChMKChMoGhYaKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgo\", \"dateOfIssue\": \"20-04-2021\", \"mrz3\": \"KAMBOJ<<ANUP<<<<<<<<<<<<<<<<<<\", \"mrz2\": \"9209079M3104194IND<<<<<<<<<<<4\", \"mrz1\": \"ISINDM319711235<<<<<<<<<<<<<<<\", \"sidNumber\": \"M31971123\", \"placeOfIssue\": \"Mumbai\", \"nationality\": \"INDIAN\", \"birthplace\": \"KHURDI\", \"dob\": \"07-09-1992\", \"name\": \"KAMBOJ, ANUP\", \"fileType\": \"image/jpeg\", \"status\": \"valid\"}",
+  "failure_reason": null,
+  "timestamp": "2026-09-30T06:37:20.485247+00:00"
+}

@@ -11,7 +11,7 @@ import time
 
 import requests
 
-from utils.llm_client import get_llm_config
+from utils.llm_client import get_llm_config, _should_scrub
 
 LLM_MAX_RETRIES = 3
 LLM_MIN_INTERVAL_SECONDS = 1.0
@@ -54,6 +54,14 @@ def call_llm(prompt: str) -> str:
 
     print(f"[discovery] LLM call using model={model!r}")
 
+    # This is a model EGRESS point. Discovery prompts carry live page text and
+    # form input values, which can echo the real credential straight back (a
+    # portal result page prints the number you searched for). Scrub here so a
+    # frontier model only ever sees the KIND of credential, never a value.
+    if _should_scrub(config):
+        from utils.log_scrubber import scrub_pii
+        prompt = scrub_pii(prompt)
+
     headers = {
         "Authorization": f"Bearer {api_key}",
         "Content-Type": "application/json"
@@ -87,7 +95,10 @@ def call_llm(prompt: str) -> str:
 
         last_llm_request_at = time.monotonic()
 
-        if response.status_code != 429:
+        # Retry rate limits (429) AND transient provider failures (5xx); a
+        # frontier endpoint returning 503 under load otherwise aborts the
+        # whole discovery step.
+        if response.status_code not in (429, 500, 502, 503, 504):
             break
 
         if attempt == LLM_MAX_RETRIES:
@@ -100,6 +111,10 @@ def call_llm(prompt: str) -> str:
         try:
             delay = float(retry_after) if retry_after else 0
         except (TypeError, ValueError):
+            delay = 0
+        if delay <= 0:
+            # No/zero Retry-After header: back off exponentially instead of
+            # hammering the provider immediately.
             delay = 2 ** (attempt + 1)
 
         print(

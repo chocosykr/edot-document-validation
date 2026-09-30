@@ -8,7 +8,7 @@ Two escalation levels:
 import copy
 import json
 import logging
-from typing import Optional
+from typing import Optional, Tuple
 
 from execution.docker_runner import DockerMethodRunner
 from execution.models import ExecutionRequest, ExecutionDecisionStatus
@@ -41,37 +41,87 @@ def _llm_improve(
         "execution_steps, expected_responses — a corrected version of the "
         "method. Fix mechanical problems (wrong endpoint, wrong verb, wrong "
         "parameter names, wrong param_location, missing steps). Never invent "
-        "values; inputs are provided by the runner. If the failure indicates "
-        "the target site cannot be driven this way at all, return the single "
-        "word UNFIXABLE."
+        "values; inputs are provided by the runner. "
+        "If the declarative step schema cannot express the flow (stateful "
+        "token/session handshake, bespoke parsing, incoherent placeholders "
+        "you cannot reconcile), you MAY return method_type \"SCRIPT\" with a "
+        "`script_source` Python program instead of execution_steps. A SCRIPT "
+        "imports only `from dvs_io import get_input, http_get, http_post, "
+        "write_result`; it MUST read every required input via "
+        "get_input(\"name\") and finish with write_result(status, "
+        "raw_response=..., evidence=...). "
+        "If the failure indicates the target site cannot be driven this way "
+        "at all, return the single word UNFIXABLE."
     )
+    from utils.log_scrubber import scrub_pii
     user = (
-        "METHOD:\n" + method.model_dump_json(indent=2) +
-        "\n\nFAILURE EVIDENCE:\n" + _json.dumps({
+        "METHOD:\n" + scrub_pii(method.model_dump_json(indent=2)) +
+        "\n\nFAILURE EVIDENCE:\n" + scrub_pii(_json.dumps({
             "expected_decision": attempt.expected_decision,
             "actual_decision": attempt.actual_decision,
             "error": attempt.error,
             "logs_tail": (attempt.logs or "")[-800:],
             "raw_response_head": (attempt.raw_response or "")[:1200],
-        }, indent=2)
+        }, indent=2))
     )
 
     result = generate_json(system, user)
-    if not result or "execution_steps" not in result:
+    if not result:
+        return None
+    script_src = str(result.get("script_source") or "").strip()
+    if not script_src and "execution_steps" not in result:
         return None
     try:
         improved = copy.deepcopy(method)
-        improved.execution_steps = result["execution_steps"]
+        if script_src:
+            improved.method_type = MethodType.SCRIPT
+            improved.script_source = result["script_source"]
+            improved.execution_steps = []
+        else:
+            improved.execution_steps = result["execution_steps"]
+            improved.script_source = None
+            if result.get("method_type"):
+                improved.method_type = MethodType(result["method_type"])
         if result.get("expected_responses"):
             merged = dict(method.expected_responses or {})
             merged.update(result["expected_responses"])
             improved.expected_responses = merged
-        if result.get("method_type"):
-            improved.method_type = MethodType(result["method_type"])
         return improved
     except Exception as e:
         logger.warning("LLM improvement produced invalid method: %s", e)
         return None
+
+
+_BROWSER_DOM_EXCERPT = 6_000
+
+
+def _browser_evidence(exec_result) -> dict:
+    """Condense the browser executor's page evidence for the healing model.
+
+    Text only: DOM, console, and the request/response trace. Any saved
+    screenshots are reported by PATH — the files exist so a human (or a
+    later multimodal step) can look at the real page; they are never inlined
+    into this payload. Screenshots are captured pre-fill only, so a path
+    never points at an image containing a credential value.
+    """
+    evidence = exec_result.evidence if isinstance(exec_result.evidence, dict) else {}
+    diagnostics = evidence.get("browser_diagnostics") or {}
+    screenshots = evidence.get("screenshot_paths") or []
+    if not diagnostics and not screenshots:
+        return {}
+
+    bundle = {
+        "screenshots_saved": list(screenshots),
+        "dom_excerpt": str(diagnostics.get("dom") or "")[:_BROWSER_DOM_EXCERPT],
+        "console": list(diagnostics.get("console") or []),
+        "network": list(diagnostics.get("network") or []),
+    }
+    if screenshots:
+        bundle["screenshots_note"] = (
+            "PNG files of the page state BEFORE any credential was typed. "
+            "Read the DOM/network below for the post-submit state."
+        )
+    return bundle
 
 
 def _build_agent_test_tool(
@@ -85,19 +135,42 @@ def _build_agent_test_tool(
     import json
 
     @tool
-    def test_method(execution_steps_json: str, expected_responses_json: str, method_type: str) -> str:
+    def test_method(
+        execution_steps_json: str = "[]",
+        expected_responses_json: str = "{}",
+        method_type: str = "",
+        script_source: str = "",
+    ) -> str:
         """
-        Tests the modified method payload against the live API.
-        You MUST pass valid JSON strings for execution_steps and expected_responses.
-        Returns the execution logs, raw response, and whether it passed or failed.
+        Tests a candidate method payload against the live API.
+
+        Provide EITHER execution_steps_json (+ method_type) for a declarative
+        method, OR script_source for a SCRIPT method. A SCRIPT is Python that
+        imports `from dvs_io import get_input, http_get, http_post, write_result`,
+        reads each required input with get_input("..."), and ends with
+        write_result(status, raw_response=..., evidence=...).
+        expected_responses_json is always required. Returns the execution logs,
+        raw response, and whether the candidate produced the expected decision.
+
+        For method_type BROWSER the result also carries `browser_evidence`:
+        the rendered page's DOM excerpt, its browser console entries, the
+        request/response trace, and the path(s) of any PNG screenshots saved
+        for this run. Use it instead of guessing why a step failed. The
+        screenshots are pre-fill only, so they never show credential values.
         """
         test_m = copy.deepcopy(method)
         try:
-            test_m.execution_steps = json.loads(execution_steps_json)
-            test_m.expected_responses = json.loads(expected_responses_json)
-            test_m.method_type = MethodType(method_type)
+            test_m.expected_responses = json.loads(expected_responses_json or "{}")
+            if str(script_source or "").strip():
+                test_m.method_type = MethodType.SCRIPT
+                test_m.script_source = script_source
+                test_m.execution_steps = []
+            else:
+                test_m.execution_steps = json.loads(execution_steps_json or "[]")
+                if method_type:
+                    test_m.method_type = MethodType(method_type)
         except Exception as e:
-            return f"Error parsing JSON inputs: {e}"
+            return f"Error parsing inputs: {e}"
 
         req = ExecutionRequest(method=test_m, inputs=tc.inputs)
         exec_result = runner.execute_method(
@@ -123,20 +196,56 @@ def _build_agent_test_tool(
             "logs": (exec_result.logs or "")[-1000:] if exec_result.logs else "",
             "raw_response": (exec_result.raw_response or "")[:1000]
         }
-        return json.dumps(res, indent=2)
+
+        # Browser methods return what the rendered page actually was. Without
+        # it a fix is a guess at structure the DOM never revealed in the logs
+        # (renamed field, cookie wall, error panel after submit).
+        browser_evidence = _browser_evidence(exec_result)
+        if browser_evidence:
+            res["browser_evidence"] = browser_evidence
+
+        # MODEL EGRESS: this tool result is fed straight back to the healing
+        # model as a tool message, bypassing the scrubbing every other prompt
+        # gets in utils.llm_client. `error` and `raw_response` are the raw
+        # executor outputs, so a frontier model would otherwise receive real
+        # credential values — in error text too. Scrub before returning.
+        from utils.log_scrubber import scrub_pii
+        return scrub_pii(json.dumps(res, indent=2))
 
     return test_method
+
+
+def _escalation_block(
+    escalated_from: Optional[str], context_steps: Optional[list]
+) -> str:
+    """Prompt section telling the agent it must produce a BROWSER method."""
+    if not escalated_from:
+        return ""
+    steps = json.dumps(context_steps or [], indent=2, default=str)[:2000]
+    return f"""
+ESCALATION — READ FIRST:
+{escalated_from}
+
+This method MUST now be authored as method_type "BROWSER" and driven with a
+real browser. Reuse the SAME source_url: load the page, fill the fields the
+document provides, submit, and read the result page. Do NOT return the steps
+below — they belong to the executor that already failed. They are shown only
+so you do not repeat the approach:
+{steps}
+"""
 
 
 def _build_agent_prompt(
     method: ValidationMethod,
     attempt: ValidationAttempt,
+    escalated_from: Optional[str] = None,
+    context_steps: Optional[list] = None,
 ) -> str:
     """Build the prompt for the agentic healing agent."""
-    return f"""
+    prompt = f"""
 You are an expert automation engineer fixing a broken web scraper / API integration.
 The generated method failed during validation.
-
+{_escalation_block(escalated_from, context_steps)}
 Current Method:
 {method.model_dump_json(indent=2)}
 
@@ -165,7 +274,28 @@ For method_type "HTTP":
 For method_type "WEB_FORM":
   - FETCH_FORM: Fetches an HTML page and parses forms. Fields: "url".
   - FILL: Fills a form field. Fields: "field" (input name/id), "value" (use {{{{{{input_name}}}}}} placeholders).
+
+For method_type "BROWSER" (a real Playwright browser — use when the site
+cannot be driven by a plain request: JS-rendered forms, session handshakes,
+SPA lookups, or when HTTP/WEB_FORM/SCRIPT has already failed):
+  - FETCH_FORM (alias NAVIGATE): navigates to a URL. Fields: "url".
+  - SOLVE_CAPTCHA: detects and solves a simple text CAPTCHA. It MUST come
+    before any FILL; the executor enforces this ordering.
+  - FILL: fills a field on the page. Fields: "field" (the input's name/id —
+    read it from the page evidence, do not guess), "value" (use
+    {{{{{{input_name}}}}}} placeholders).
+  - SUBMIT: submits the form and reads the result page.
+  A BROWSER test returns "browser_evidence" (DOM, console, network trace and
+  any saved screenshots). READ IT to learn the real page structure before
+  writing steps.
   - SUBMIT: Submits the form. No fields needed.
+
+For method_type "SCRIPT" (last-resort escape hatch):
+  Pass `script_source` instead of execution_steps to test_method. The program
+  imports `from dvs_io import get_input, http_get, http_post, write_result`,
+  reads each required input with get_input("canonical_name"), and ends with
+  write_result(status, raw_response=..., evidence=...). Use SCRIPT only when
+  the declarative steps genuinely cannot express the flow.
 
 IMPORTANT RULES:
 - If the API returns HTTP 400 with a GET request, try POST with "json_body" instead.
@@ -191,11 +321,62 @@ a failure involves a missing or unsatisfiable input):
 - Unsure means IDENTITY. Never guess in the permissive direction.
 
 Your task:
-1. Use the test_method tool to iteratively try different execution_steps until you get "passed": true.
-2. Once test_method returns passed: true, output a final JSON block enclosed in ```json ... ``` with the winning method_type, execution_steps, and expected_responses.
+1. Use the test_method tool to iteratively try execution_steps (or script_source) until you get "passed": true.
+2. Once test_method returns passed: true, output a final JSON block enclosed in ```json ... ``` with the winning method_type plus either execution_steps or script_source, and expected_responses.
 
 Only output the final JSON when you have successfully tested it and got passed: true.
     """.strip()
+    from utils.log_scrubber import scrub_pii
+    return scrub_pii(prompt)
+
+
+# Method types that drive a site without a browser. When one of them keeps
+# failing, the page's real structure is usually the thing that is missing
+# (a renamed field, a JS-rendered form, a cookie wall) — and only the BROWSER
+# executor can observe it and report it back through browser_evidence.
+_NON_BROWSER_TYPES = {
+    MethodType.HTTP, MethodType.WEB_FORM, MethodType.QR_URL, MethodType.SCRIPT
+}
+
+
+def _should_escalate_to_browser(method: ValidationMethod, attempt_num: int) -> bool:
+    """Escalate once the cheaper method types have demonstrably had their shot.
+
+    Only from the second healing pass onward: attempt 1 is the cheap
+    mechanical rewrite (wrong endpoint, wrong param name), which fixes most
+    failures for a fraction of the cost. By the time the agentic pass runs,
+    a non-browser method that still fails is failing on structure.
+    """
+    return method.method_type in _NON_BROWSER_TYPES and attempt_num >= 2
+
+
+def _escalate_to_browser(method: ValidationMethod) -> Tuple[str, list]:
+    """Switch a failing non-browser method to a browser method.
+
+    Returns ``(note, previous_steps)``. The steps are REMOVED from the method
+    and handed to the agent as context only: submitting HTTP/SCRIPT actions to
+    the browser executor is guaranteed to fail (every action is unknown to it),
+    so a clean "no steps yet" state is better than a method that looks
+    configured but cannot run.
+
+    ``expected_responses`` is deliberately kept — comparison_mode, field_mapping
+    and not_found_signatures describe the RESPONSE and are transport-agnostic.
+    """
+    previous_type = method.method_type.value
+    previous_steps = list(method.execution_steps or [])
+    had_script = bool((method.script_source or "").strip())
+
+    method.method_type = MethodType.BROWSER
+    method.script_source = None
+    method.execution_steps = []
+
+    note = (
+        f"[Browser Escalation] {previous_type}"
+        + ("+SCRIPT" if had_script else "")
+        + " could not be driven — re-authoring as a BROWSER method against "
+        "the real page."
+    )
+    return note, previous_steps
 
 
 def _run_agentic_loop(
@@ -204,9 +385,15 @@ def _run_agentic_loop(
     tc: TestCase,
     runner: DockerMethodRunner,
     executor_script_path: Optional[str],
+    escalated_from: Optional[str] = None,
+    context_steps: Optional[list] = None,
 ) -> Optional[str]:
     """
     Spins up an Agentic Loop to iteratively test and fix the method until it works.
+
+    ``escalated_from`` / ``context_steps`` describe the executor this method
+    was just escalated away from, so the agent can see what was tried instead
+    of re-deriving it.
     """
     from langchain_openai import ChatOpenAI
     from langgraph.prebuilt import create_react_agent
@@ -225,7 +412,10 @@ def _run_agentic_loop(
     test_tool = _build_agent_test_tool(method, tc, runner, executor_script_path)
     agent = create_react_agent(llm, [test_tool])
 
-    prompt = _build_agent_prompt(method, attempt)
+    prompt = _build_agent_prompt(
+        method, attempt, escalated_from=escalated_from,
+        context_steps=context_steps,
+    )
 
     try:
         final_state = agent.invoke(
@@ -241,7 +431,14 @@ def _run_agentic_loop(
     if match:
         try:
             improved = json.loads(match.group(1))
-            method.execution_steps = improved["execution_steps"]
+            if str(improved.get("method_type") or "").upper() == "SCRIPT" and str(
+                improved.get("script_source") or ""
+            ).strip():
+                method.method_type = MethodType.SCRIPT
+                method.script_source = improved["script_source"]
+                method.execution_steps = []
+            elif "execution_steps" in improved:
+                method.execution_steps = improved["execution_steps"]
             if "expected_responses" in improved:
                 method.expected_responses = improved["expected_responses"]
             if "method_type" in improved:
@@ -295,6 +492,7 @@ def escalate_improvement(
                 method.execution_steps = improved.execution_steps
                 method.expected_responses = improved.expected_responses
                 method.method_type = improved.method_type
+                method.script_source = improved.script_source
                 note = ("[LLM Improvement Applied] Direct rewrite "
                         "passed the structural test and was adopted.")
             else:
@@ -305,7 +503,19 @@ def escalate_improvement(
     elif not agentic_healing:
         note = "[Agentic Improvement Disabled] DVS_AGENTIC_HEALING=0."
     else:
+        escalation_note = None
+        context_steps = None
+        if _should_escalate_to_browser(method, attempt_num):
+            escalation_note, context_steps = _escalate_to_browser(method)
+            logger.info(
+                "%s (method %s, attempt %d/%d)",
+                escalation_note, method.method_id, attempt_num, max_attempts,
+            )
         note = _run_agentic_loop(
-            method, attempt, tc, runner, executor_script_path
+            method, attempt, tc, runner, executor_script_path,
+            escalated_from=escalation_note,
+            context_steps=context_steps,
         )
+        if escalation_note:
+            note = f"{escalation_note} {note}"
     return note

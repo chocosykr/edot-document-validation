@@ -54,8 +54,12 @@ own package. When you touch a stage, edit its module — not the orchestrator.
 | `generation/param_mapping.py` | Component 3: narrow LLM mapping, workflow-param pinning, dispatch-selector detection |
 | `generation/discriminators.py` | Component 2: known-fake probe + difflib marker extraction |
 | `generation/post_process.py` | Deterministic post-generation enforcement (finalization) |
-| `execution/docker_runner.py` | Docker sandbox runner; ships executor modules into the container (`_method_timeout`) |
+| `execution/docker_runner.py` | Docker sandbox runner; ships executor modules into the container (`_method_timeout`); SCRIPT branch writes `script_source` as `executor.py` + ships `dvs_io.py` |
 | `execution/safety.py` | Input guarding, contact-only synthesis, structural test values |
+| `executors/dvs_io.py` | SCRIPT SDK shim (`get_input`, cookie-aware `http_get`/`http_post`, `write_result`) — the only I/O surface an authored script gets |
+| `execution/script_policy.py` | Harness-side SCRIPT verdict guardrails (downward-only): a script cannot claim VERIFIED on a refusal or with no evidence |
+| `validation/coverage.py` | Shared structural coverage check (declarative `{{placeholder}}` / SCRIPT `get_input`) used by validator + generator fallback |
+| `utils/log_scrubber.py` | Shape-preserving redaction (`‹CDC:10alnum›`) for logs, healing prompts and debug dumps |
 | `executors/http_executor.py` | HTTP **step runner**: captcha round, GET_HTML/EXTRACT, REQUEST loop, `main()` |
 | `executors/http_helpers.py` | HTTP verbs, session/cookies, retry, response compaction, substitution, captcha fetch |
 | `executors/http_decider.py` | Response classification: `decide()`, learned not-found signatures (new `_json_message_reports_not_found`) |
@@ -320,6 +324,22 @@ code-level separation between "local-only verification calls" and "external
 generation calls" exists, but **in this deployment both resolve to the same
 external endpoint, so raw PII does leave the machine.** This is risk #2 in
 §6.
+
+**Update (2026-09-30): the toggle now actually routes providers.**
+`USE_LOCAL_LLM_ONLY` is no longer reporting-only:
+
+- `true` (default, or unset) -> LOCAL: `LLM_URL` + `LLM_MODEL` (`AI_Local`).
+- `false` -> FRONTIER: the **same** `LLM_URL` gateway and `LLM_API_KEY`, with
+  `FRONTIER_LLM_MODEL` (default `gemini/gemini-2.5-flash`). The gateway serves
+  both models behind one endpoint, so no second provider or key is required;
+  `FRONTIER_LLM_URL` / `FRONTIER_LLM_API_KEY` override only when pointing at a
+  genuinely different provider.
+
+`utils/llm_client.get_llm_config()` now returns `is_frontier`, and every call
+site (generation, discovery, healing, vision, and the "local" ambiguous-case
+path) scrubs PII through `utils/log_scrubber.scrub` before a frontier request
+leaves the machine. The Docker sandbox receives the frontier env keys
+(`execution/docker_runner.py`) so captcha vision follows the same switch.
 
 Why field comparison replaced keyword matching: the original method decided
 "verified" if the response contained `"Name"` and `"Date of Birth"` — static

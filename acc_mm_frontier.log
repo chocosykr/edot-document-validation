@@ -1,0 +1,112 @@
+Selected: InputFiles/2O - HEIN HTET (AIO).pdf
+
+[1/4] Running OCR...
+INFO:ocr.client:OCR cache hit for d7fca757cbfd
+[2/4] Extracting and redacting...
+       Lookup credentials captured in memory (never persisted).
+[3/4] Running validation engine...
+INFO:engine.validation_engine:Starting validation — country='Myanmar' doc_type='Certificate of Competency'
+INFO:engine.validation_engine:No active method found. Checking confirmed source database.
+INFO:engine.validation_engine:Found 1 source(s) in DB. Generating candidate method.
+INFO:generation.generator:XHR extraction gate: source_url=http://www.dmamyanmar.org/AllInOneCertificate/SelfVerification page_structure_present=True inline_js_present=True
+INFO:generation.generator:XHR extractor result: source_url=http://www.dmamyanmar.org/AllInOneCertificate/SelfVerification xhr_contract=None
+INFO:generation.generator:XHR extraction unavailable — using full-LLM generation path.
+INFO:utils.llm_client:LLM call: model='gemini-3.8-flash' endpoint='https://generativelanguage.googleapis.com/v1beta/openai/chat/completions' frontier=True
+WARNING:utils.llm_client:LLM HTTP Error: 503 Service Unavailable
+[{
+  "error": {
+    "code": 503,
+    "message": "This model is currently experiencing high demand. Spikes in demand are usually temporary. Please try again later.",
+    "status": "UNAVAILABLE"
+  }
+}
+]
+
+[DEBUG] Raw LLM output from generator:
+null
+
+ERROR:engine.validation_engine:Method generation failed: LLM failed to generate a candidate method.
+WARNING:engine.validation_engine:Generation from DB source failed (Method generation failed: LLM failed to generate a candidate method.); falling through to discovery.
+INFO:engine.validation_engine:No DB source found. Running discovery agent.
+
+Generating search queries with LLM...
+[discovery] LLM call using model='gemini-3.8-flash'
+ERROR:engine.validation_engine:Discovery agent failed: 503 Server Error: Service Unavailable for url: https://generativelanguage.googleapis.com/v1beta/openai/chat/completions
+
+[4/4] Generating report...
+Report saved to: ./discovery_report_2O - HEIN HTET (AIO)_20260930_121932.md
+
+--- REDACTED PROFILE ---
+{
+  "document_type": "Certificate of Competency",
+  "document_type_key": "certificate_of_competency",
+  "issuing_organization": "Department of Marine Administration",
+  "issuing_country": "Myanmar",
+  "authorities": {
+    "issuing_authority": "Department of Marine Administration",
+    "administering_authority": "Ministry of Transport and Communications",
+    "flag_state": "The Republic of the Union of Myanmar"
+  },
+  "document_holder": {
+    "name": "[PERSON_NAME]",
+    "date_of_birth": "[DATE_OF_BIRTH]"
+  },
+  "document_numbers": [
+    "[DOCUMENT_NUMBER]"
+  ],
+  "issue_date": "26-Jun-2026",
+  "expiry_date": "02-Jun-2031",
+  "identifying_fields": {
+    "gender": "MALE",
+    "place_of_issue": "Yangon",
+    "identifying_characteristics": "Scar on right cheek",
+    "capacity": "Deck Officer Class II Chief Mate",
+    "stcw_regulations": [
+      "II/2",
+      "IV/2",
+      "VI/1",
+      "VI/2",
+      "VI/3",
+      "V/1-1"
+    ]
+  },
+  "missing_or_unclear_fields": [],
+  "inconsistencies": [
+    "Multiple distinct serial numbers appear across pages (e.g., S/N 1416835, S/N 1416830, S/N 1415831, S/N 1415832, S/N 1418824, S/N 1416821)",
+    "Issue date is listed as 26-Jun-2026"
+  ],
+  "source_discovery_hints": [
+    "http://www.dmamyanmar.org"
+  ],
+  "redaction_summary": {
+    "fields_redacted": [
+      "document_holder.name",
+      "document_holder.date_of_birth",
+      "document_numbers",
+      "holder_signature",
+      "sirb_number"
+    ],
+    "pii_present": true
+  }
+}
+
+--- VALIDATION DECISION ---
+{
+  "document_result": "UNKNOWN",
+  "evidence_quality": "NONE",
+  "decision_status": "TECHNICAL_FAILURE",
+  "evidence": {},
+  "method_id": null,
+  "method_type": null,
+  "source_url": null,
+  "raw_response": null,
+  "failure_reason": "Method generation failed: LLM failed to generate a candidate method.",
+  "timestamp": "2026-09-30T06:49:26.056768+00:00"
+}
+
+[!] Technical Failure occurred. Scrubbed log written to agent_debug_log.json for external agent debugging.
+
+[?] Do you want to activate the Agentic Fallback Loop to automatically fix this issue?
+    (This will run the fallback agent on the configured model 'gemini-3.8-flash' and may consume credits.)
+Proceed? (y/n): [!] No input available; skipping the fallback loop.
+[!] Agentic Fallback Loop aborted.

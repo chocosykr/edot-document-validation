@@ -29,7 +29,7 @@ from generation.post_process import finalize_method as _finalize_method
 
 # Split modules (verbatim moves). Re-exported here so existing callers and
 # tests that import/patch through generation.generator keep working.
-from generation.page_fetch import _collect_inline_js, _fetch_page_structure
+from generation.page_fetch import _collect_inline_js, _fetch_page_structure, _page_channel
 from generation.xhr_contract import (
     _XHR_PATTERNS,
     _CONCAT_SEGMENT,
@@ -59,8 +59,141 @@ from generation.discriminators import (
     _fetch_idle_text,
     _discover_discriminators,
 )
+from validation.coverage import missing_required_inputs
 
 logger = logging.getLogger(__name__)
+
+
+def _prepare_llm_output(
+    llm_output: dict, redacted_profile: dict, source_url,
+) -> None:
+    """Fill the metadata the LLM must not be trusted to echo.
+
+    method_id is made unique; source_url and the document identity fields come
+    from the confirmed source/profile; status is forced to TESTING; the
+    canonical document_type_key is set for the post-processor.
+    """
+    method_id = llm_output.get("method_id", "")
+    if not method_id or method_id == "M_12345":
+        llm_output["method_id"] = f"M_{uuid.uuid4().hex[:8].upper()}"
+    if not str(llm_output.get("source_url") or "").strip():
+        llm_output["source_url"] = source_url or ""
+    if not str(llm_output.get("country") or "").strip():
+        llm_output["country"] = str(redacted_profile.get("issuing_country") or "")
+    if not str(llm_output.get("document_type") or "").strip():
+        llm_output["document_type"] = str(redacted_profile.get("document_type") or "")
+    llm_output["status"] = MethodStatus.TESTING
+    llm_output["document_type_key"] = profile_document_type_key(redacted_profile)
+
+
+_RUNTIME_INPUTS = {
+    "captcha_text", "captcha_id", "__RequestVerificationToken",
+    "verification_url", "document_type_key", "issuing_country",
+}
+
+
+def _apply_input_availability(method, available_inputs) -> None:
+    """Drop required identity inputs the document cannot supply.
+
+    Mirrors the narrow path's availability gate (generation/param_mapping).
+    Live case (2026-09-30, Myanmar COC): the model declared a passport number
+    required because the site's form has the field, but the document carries
+    none, so the engine refused to run at all. An unavailable identity input
+    must be dropped along with the request parameter that references it —
+    never left to submit an unresolved placeholder.
+    """
+    if not available_inputs:
+        return
+    available = set(available_inputs)
+    contact = set((method.expected_responses or {}).get("contact_only_inputs") or [])
+    drop = [
+        f for f in (method.required_inputs or [])
+        if f not in available and f not in contact and f not in _RUNTIME_INPUTS
+    ]
+    if not drop:
+        return
+
+    def _references_dropped(value) -> bool:
+        text = str(value)
+        return any("{{" + f + "}}" in text for f in drop)
+
+    new_steps = []
+    for step in (method.execution_steps or []):
+        step = dict(step)
+        for container_key in ("params", "json_body"):
+            container = step.get(container_key)
+            if isinstance(container, dict):
+                step[container_key] = {
+                    k: v for k, v in container.items() if not _references_dropped(v)
+                }
+        new_steps.append(step)
+
+    method.required_inputs = [f for f in method.required_inputs if f not in drop]
+    method.execution_steps = new_steps
+    method.limitations = list(method.limitations or []) + [
+        f"Unavailable input(s) {drop} omitted from required_inputs and from the "
+        "request (the document does not carry them)."
+    ]
+    logger.warning(
+        "Dropped unavailable required input(s) %s from method %s",
+        drop, method.method_id,
+    )
+
+
+def _load_generation_prompt(channel: Optional[str] = None) -> str:
+    prompt_path = os.path.join(
+        os.path.dirname(os.path.dirname(__file__)), "prompts", "method_generation.txt"
+    )
+    with open(prompt_path, "r", encoding="utf-8") as f:
+        return f.read()
+
+
+def _generate_script_fallback(
+    redacted_profile: dict,
+    source_info: dict,
+    page_structure,
+    reason: str,
+    available_inputs: List[str] = None,
+) -> "ValidationMethod | None":
+    """Second generation pass that asks explicitly for a SCRIPT method.
+
+    Used when the declarative shape cannot consume its own inputs (or fails
+    deterministic enforcement). Only accepted if the model actually returns
+    script_source; otherwise returns None and the caller keeps the
+    declarative candidate for the validator to refuse.
+    """
+    user_prompt = json.dumps({
+        "redacted_profile": redacted_profile,
+        "source_info": source_info,
+        "page_structure_hint": page_structure.get("summary") if page_structure else None,
+        "available_inputs": available_inputs,
+        "generation_directive": (
+            "Declarative generation FAILED: " + reason + ". "
+            'Return a method with method_type "SCRIPT" and a complete '
+            "script_source Python program (omit execution_steps). Follow the "
+            "SCRIPT section exactly: import only from dvs_io, read every "
+            'required input with get_input("<canonical_name>"), and finish with '
+            "write_result(status, raw_response=..., evidence=...)."
+        ),
+    }, indent=2)
+
+    llm_output = generate_json(_load_generation_prompt(), user_prompt)
+    print(f"\n[DEBUG] SCRIPT fallback LLM output:\n{json.dumps(llm_output, indent=2)}\n")
+    if not llm_output:
+        return None
+    if not str(llm_output.get("script_source") or "").strip():
+        logger.warning("SCRIPT fallback model returned no script_source.")
+        return None
+    llm_output["method_type"] = "SCRIPT"
+    _prepare_llm_output(
+        llm_output, redacted_profile,
+        source_info.get("source_url") or source_info.get("url"),
+    )
+    try:
+        return _finalize_method(llm_output)
+    except Exception as e:
+        logger.warning("SCRIPT fallback finalization failed: %s", e)
+        return None
 
 # Fake values used for the discriminator-discovery probe. MUST stay in sync
 # with engine.validation_engine._GENERIC_TEST_CASES so the structural test
@@ -169,26 +302,41 @@ def generate_candidate_method(
     if source_url:
         page_structure = _fetch_page_structure(source_url)
 
+    channel = _page_channel(page_structure) if page_structure else None
     logger.info(
-        "XHR extraction gate: source_url=%s page_structure_present=%s inline_js_present=%s",
-        source_url,
-        bool(page_structure),
-        bool(page_structure and page_structure.get("inline_js")),
+        "Page channel=%s source_url=%s page_structure_present=%s",
+        channel, source_url, bool(page_structure),
     )
 
     xhr_contract = None
     workflow_fixed_params = {}
 
-    if page_structure and page_structure.get("inline_js"):
+    if channel and channel in ("ajax", "spa"):
+        js = page_structure.get("inline_js") if channel == "ajax" else page_structure.get("bundle_js")
+        if js:
+            try:
+                xhr_contract = _extract_xhr_contract(
+                    js, source_url, workflow_fixed_params=workflow_fixed_params
+                )
+            except Exception as e:
+                logger.warning(
+                    "XHR extraction raised unexpectedly — leaving it unresolved: %s", e
+                )
+                xhr_contract = None
+    elif channel == "spa" and page_structure.get("bundle_js"):
         try:
-            xhr_contract = _extract_xhr_contract(
-                page_structure["inline_js"],
-                source_url,
-                workflow_fixed_params=workflow_fixed_params,
+            xhr_contract = _extract_xhr_contract_from_bundles(
+                page_structure["bundle_js"], source_url
             )
+            if xhr_contract:
+                logger.info(
+                    "Bundle-based XHR contract accepted (SPA shell page): %s",
+                    xhr_contract["endpoint"],
+                )
         except Exception as e:
-            logger.warning("XHR extraction raised unexpectedly — falling back to LLM: %s", e)
-            xhr_contract = None
+            logger.warning(
+                "Bundle XHR extraction raised unexpectedly — leaving residual: %s", e
+            )
 
     # Component 1b: when the page is an SPA shell (no usable inline JS), try
     # the deterministic fetch()-contract extractor over the external bundles
@@ -209,13 +357,13 @@ def generate_candidate_method(
             logger.warning("Bundle XHR extraction raised unexpectedly — falling back to LLM: %s", e)
             xhr_contract = None
 
-    logger.info("XHR extractor result: source_url=%s xhr_contract=%r", source_url, xhr_contract)
-
-    if xhr_contract:
-        # ------------------------------------------------------------
-        # Narrow path (Components 1-3)
-        # ------------------------------------------------------------
-        xhr_contract["workflow_options"] = page_structure.get("workflow_options", []) if page_structure else []
+    logger.info("XHR extractor result: source_url=%s xhr_contract=%r", source_url, xhr_contract)        if xhr_contract:
+            # Narrow path: the page's own JS/API evidence provided a request
+            # contract. The channel that produced it is remembered for
+            # diagnostics and for the META prompt (so the model knows the
+            # page was, e.g., an extracted servlet/API call).
+            xhr_contract["workflow_options"] = page_structure.get("workflow_options", []) if page_structure else []
+            page_structure.setdefault("channel", channel)
         document_key = profile_document_type_key(redacted_profile)
         # Country-scoped document types (SID/CDC/COC) must have their type
         # named by the SOURCE PAGE itself — a workflow option, an API path
@@ -308,21 +456,24 @@ def generate_candidate_method(
 
         return method
 
-    # ------------------------------------------------------------
-    # Fallback: existing full-LLM path
-    # ------------------------------------------------------------
-    logger.info("XHR extraction unavailable — using full-LLM generation path.")
+    # Fallback path: no usable extracted contract. The page's structural
+    # classification — when it landed — is the single most important input
+    # for choosing the right method type here, so it is handed to the model
+    # directly and sampled response comparisons below reference it.
+    logger.info(
+        "No resolved XHR contract — falling back to full-LLM generation (channel=%s).",
+        channel or "unknown",
+    )
 
-    prompt_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), "prompts", "method_generation.txt")
-    with open(prompt_path, "r", encoding="utf-8") as f:
-        system_prompt = f.read()
+    system_prompt = _load_generation_prompt(channel=channel)
 
     page_structure_hint = page_structure.get("summary") if page_structure else None
 
     user_prompt = json.dumps({
         "redacted_profile": redacted_profile,
         "source_info": source_info,
-        "page_structure_hint": page_structure_hint
+        "page_structure_hint": page_structure_hint,
+        "available_inputs": available_inputs,
     }, indent=2)
 
     llm_output = generate_json(system_prompt, user_prompt)
@@ -332,28 +483,34 @@ def generate_candidate_method(
     if not llm_output:
         raise RuntimeError("LLM failed to generate a candidate method.")
 
-    # Ensure method_id is uniquely generated if the LLM provided a placeholder
-    method_id = llm_output.get("method_id", "")
-    if not method_id or method_id == "M_12345":
-        llm_output["method_id"] = f"M_{uuid.uuid4().hex[:8].upper()}"
-
-    # source_url is metadata about the CONFIRMED source — injected from
-    # source_info rather than trusted to the model's echo. Same for the
-    # document identity fields, which come from the classified profile.
-    if not str(llm_output.get("source_url") or "").strip():
-        llm_output["source_url"] = source_url or ""
-    if not str(llm_output.get("country") or "").strip():
-        llm_output["country"] = str(redacted_profile.get("issuing_country") or "")
-    if not str(llm_output.get("document_type") or "").strip():
-        llm_output["document_type"] = str(redacted_profile.get("document_type") or "")
-
-    # Force status to TESTING regardless of what the LLM hallucinates
-    llm_output["status"] = MethodStatus.TESTING
-    # Set document_type_key on the output so _finalize_method can include it
-    # in expected_responses without trusting the model's echo.
-    llm_output["document_type_key"] = profile_document_type_key(redacted_profile)
+    _prepare_llm_output(llm_output, redacted_profile, source_url)
 
     # ---- Deterministic post-generation enforcement --------------------
     # Delegated to generation.post_process so the generator stays focused on
-    # the LLM interaction and contract extraction.
-    return _finalize_method(llm_output)
+    # the LLM interaction and contract extraction. Enforcement failures
+    # (BROWSER proposal, no required inputs) raise LOUDLY and are not healed
+    # here — an invalid proposal is a model error, not a shape mismatch.
+    declarative_method = _finalize_method(llm_output)
+    _apply_input_availability(declarative_method, available_inputs)
+
+    if not missing_required_inputs(declarative_method):
+        return declarative_method
+
+    # The method was built but cannot consume its own inputs — the shape is
+    # wrong, which is exactly what the SCRIPT escape hatch exists for. Ask the
+    # model once more, explicitly for a script. Test-before-adopt still applies
+    # downstream (the validator probes it).
+    reason = "the declarative method could not consume its required inputs"
+    logger.info("Declarative generation incoherent (%s); trying SCRIPT fallback.", reason)
+    script_method = _generate_script_fallback(
+        redacted_profile, source_info, page_structure, reason, available_inputs
+    )
+    if script_method is not None:
+        logger.info("SCRIPT fallback generation accepted: %s", script_method.method_id)
+        return script_method
+
+    logger.warning(
+        "SCRIPT fallback unavailable; returning the incoherent declarative "
+        "method for the validator to refuse."
+    )
+    return declarative_method

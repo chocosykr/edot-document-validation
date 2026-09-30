@@ -29,9 +29,21 @@ class MethodRegistry:
                 execution_steps TEXT,
                 expected_responses TEXT,
                 limitations TEXT,
-                status TEXT
+                status TEXT,
+                script_source TEXT,
+                script_runtime TEXT
             )
         ''')
+        conn.commit()
+        # SCRIPT methods (and their authored transport code) post-date the
+        # original schema; add the columns in place for existing databases so
+        # a hand-registered SCRIPT method survives a restart.
+        existing = {
+            r[1] for r in cursor.execute("PRAGMA table_info(methods)").fetchall()
+        }
+        for column, decl in (("script_source", "TEXT"), ("script_runtime", "TEXT")):
+            if column not in existing:
+                cursor.execute(f"ALTER TABLE methods ADD COLUMN {column} {decl}")
         conn.commit()
         # Methods created before canonical document keys were introduced must
         # not remain reusable ACTIVE methods under the new routing contract.
@@ -57,8 +69,9 @@ class MethodRegistry:
             INSERT OR REPLACE INTO methods (
                 method_id, document_type, country, issuer, method_type, 
                 version, source_url, required_inputs, execution_steps, 
-                expected_responses, limitations, status
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                expected_responses, limitations, status,
+                script_source, script_runtime
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ''', (
             method.method_id,
             method.document_type,
@@ -71,7 +84,9 @@ class MethodRegistry:
             json.dumps(method.execution_steps),
             json.dumps(method.expected_responses),
             json.dumps(method.limitations),
-            method.status.value
+            method.status.value,
+            method.script_source,
+            method.script_runtime
         ))
         
         conn.commit()
@@ -101,7 +116,9 @@ class MethodRegistry:
             execution_steps=json.loads(row['execution_steps']),
             expected_responses=json.loads(row['expected_responses']),
             limitations=json.loads(row['limitations']),
-            status=MethodStatus(row['status'])
+            status=MethodStatus(row['status']),
+            script_source=row.get('script_source'),
+            script_runtime=row.get('script_runtime') or "python3",
         )
 
     def find_methods(self, country: Optional[str] = None, document_type: Optional[str] = None) -> List[ValidationMethod]:
@@ -165,7 +182,9 @@ class MethodRegistry:
                 execution_steps=json.loads(row['execution_steps']),
                 expected_responses=json.loads(row['expected_responses']),
                 limitations=json.loads(row['limitations']),
-                status=MethodStatus(row['status'])
+                status=MethodStatus(row['status']),
+                script_source=row.get('script_source'),
+                script_runtime=row.get('script_runtime') or "python3",
             ))
             
         return results
@@ -191,6 +210,41 @@ class MethodRegistry:
         cursor.execute(
             'UPDATE methods SET expected_responses = ? WHERE method_id = ?',
             (json.dumps(expected_responses or {}), method_id),
+        )
+        changed = cursor.rowcount > 0
+        conn.commit()
+        conn.close()
+        return changed
+
+    def update_execution(
+        self,
+        method_id: str,
+        *,
+        method_type: MethodType,
+        execution_steps: list,
+        script_source: Optional[str],
+    ) -> bool:
+        """Persist a method's executable body WITHOUT touching status/version.
+
+        The healing ladder rewrites a candidate in place — including
+        escalating HTTP/SCRIPT -> BROWSER — but the row was written BEFORE
+        validation (status=TESTING). Re-registering the whole method would
+        write that stale TESTING status over an ACTIVE row, so the adopted
+        rewrite is persisted field-by-field here instead. Without this the
+        escalation lives only in the failing run's memory and the next run
+        regenerates the same broken method from scratch.
+        """
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        cursor.execute(
+            'UPDATE methods SET method_type = ?, execution_steps = ?, '
+            'script_source = ? WHERE method_id = ?',
+            (
+                method_type.value,
+                json.dumps(execution_steps or []),
+                script_source,
+                method_id,
+            ),
         )
         changed = cursor.rowcount > 0
         conn.commit()

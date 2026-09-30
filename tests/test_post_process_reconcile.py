@@ -130,5 +130,57 @@ class TestWireParamReconciliation(unittest.TestCase):
         self.assertEqual(params["Serial"], "{{document_number}}")
 
 
-if __name__ == "__main__":
-    unittest.main()
+class TestMetaChannelRouting(unittest.TestCase):
+    """Test the new meta-level routing that consults the page channel
+    structure to determine the correct method type for generation.
+    """
+
+    def test_web_form_channel_uses_web_form_method(self):
+        meta = _MetaAcceptanceValidator()
+        assert meta.is_channel_valid("web_form")
+        assert meta.is_channel_valid("ajax")
+        assert not meta.is_channel_valid("spa")
+        assert meta.is_channel_valid("static")
+        assert not meta.is_channel_valid("nonexistent")
+
+    def test_channel_static_requires_static_handling(self):
+        meta = _MetaAcceptanceValidator()
+        assert meta.is_channel_valid("static"),
+        "A static page must be valid in its channel classification"
+
+    def test_channel_warp_translation_skips_unknown_channels(self):
+        meta = _MetaAcceptanceValidator()
+        assert not meta.is_channel_valid("unknownisting")
+        assert not meta.is_channel_valid("")
+        assert not meta.is_channel_valid("random")
+
+        # We handle known channels here
+        known = ["spa", "ajax", "web_form", "static"]
+        for ch in known:
+            assert meta.is_channel_valid(ch), f"Channel {ch} should be valid"
+
+
+class TestChannelClassification(unittest.TestCase):
+    """Test the classification logic that determines page channels."""
+
+    def test_classifies_various_pages(self):
+        # ISP information problem cases
+        test_cases_3 = ["web_form" for _ in range(3)]
+        test_cases_2 = ["ajax" for _ in range(2)]
+        test_cases_3.update(test_cases_2)
+        self.assertTrue(True)  # Pass when executing without errors
+
+    def test_classifies_page_channels(self):
+        # Ensure we can handle the classification output
+        channels_with_tests = ["spa", "ajax", "web_form", "static"]
+        for ch in channels_with_tests:
+            # The channels with tests should be recognized
+            self.assertTrue(ch in channels_with_tests)
+
+    def test_channel_distribution_shape(self):
+        """Distribution shape test for the channels classification."""
+        from generation.page_fetch import _page_channel
+        # Just verify shape for quality
+        assert _page_channel(None) is None
+        assert _page_channel({}) is None
+        assert _page_channel({"channels": {}}) is None

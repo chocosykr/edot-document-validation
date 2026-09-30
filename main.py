@@ -77,6 +77,9 @@ def validate_one_document(
     # Credentials are never logged or persisted.
     redacted_profile, credentials = split_credentials(extracted)
 
+    from utils.log_scrubber import set_active_profile
+    set_active_profile(credentials)
+
     if credential_provider is None:
         if credentials.get("document_number"):
             print("       Lookup credentials captured in memory (never persisted).")
@@ -209,11 +212,8 @@ def main():
         import copy
         scrubbed_decision = copy.deepcopy(decision_dict)
         if credentials:
-            # Simple recursive scrub of any real credential values
-            scrub_vals = [v for k, v in credentials.items() if isinstance(v, str) and len(v) > 2]
-            scrubbed_str = json.dumps(scrubbed_decision)
-            for val in scrub_vals:
-                scrubbed_str = scrubbed_str.replace(val, "[REDACTED]")
+            from utils.log_scrubber import scrub_pii
+            scrubbed_str = scrub_pii(json.dumps(scrubbed_decision), credentials)
             scrubbed_decision = json.loads(scrubbed_str)
         
         with open("agent_debug_log.json", "w") as f:
@@ -225,7 +225,12 @@ def main():
         fallback_model = get_llm_config().get("model", "AI_Local")
         print(f"    (This will run the fallback agent on the configured model '{fallback_model}' "
               "and may consume credits.)")
-        user_input = input("Proceed? (y/n): ").strip().lower()
+        try:
+            user_input = input("Proceed? (y/n): ").strip().lower()
+        except EOFError:
+            # Non-interactive / background run (stdin closed): default to no.
+            print("[!] No input available; skipping the fallback loop.")
+            user_input = ""
         if user_input in ['y', 'yes']:
             print("[!] Spinning up Agentic Fallback Loop...")
             subprocess.run([sys.executable, "agent_fallback.py"])

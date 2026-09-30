@@ -1,0 +1,84 @@
+Selected: InputFiles/2O - HEIN HTET (AIO).pdf
+
+[1/4] Running OCR...
+INFO:ocr.client:OCR cache hit for d7fca757cbfd
+[2/4] Extracting and redacting...
+WARNING:ocr.extractor:Extraction attempt 1/4 transient HTTP 429; retrying.
+WARNING:ocr.extractor:Extraction attempt 2/4 transient HTTP 429; retrying.
+WARNING:ocr.extractor:Extraction attempt 3/4 transient HTTP 429; retrying.
+       Lookup credentials captured in memory (never persisted).
+[3/4] Running validation engine...
+INFO:engine.validation_engine:Starting validation — country='Myanmar' doc_type='Certificate of Competency'
+INFO:engine.validation_engine:No active method found. Checking confirmed source database.
+INFO:engine.validation_engine:Found 1 source(s) in DB. Generating candidate method.
+INFO:generation.generator:XHR extraction gate: source_url=http://www.dmamyanmar.org/AllInOneCertificate/SelfVerification page_structure_present=True inline_js_present=True
+INFO:generation.generator:XHR extractor result: source_url=http://www.dmamyanmar.org/AllInOneCertificate/SelfVerification xhr_contract=None
+INFO:generation.generator:XHR extraction unavailable — using full-LLM generation path.
+INFO:utils.llm_client:LLM call: model='openai/gpt-oss-120b' endpoint='https://api.groq.com/openai/v1/chat/completions' frontier=True
+WARNING:utils.llm_client:LLM transient HTTP 429; retry 1/4 (after 42.0s)
+WARNING:utils.llm_client:LLM transient HTTP 429; retry 2/4 (after 12.0s)
+
+[DEBUG] Raw LLM output from generator:
+{
+  "method_id": "M_30030",
+  "document_type": "Certificate of Competency",
+  "country": "Myanmar",
+  "issuer": "Department of Marine Administration",
+  "method_type": "HTTP",
+  "version": 1,
+  "source_url": "http://www.dmamyanmar.org/AllInOneCertificate/SelfVerification",
+  "required_inputs": [
+    "full_name",
+    "cdc_number"
+  ],
+  "execution_steps": [
+    {
+      "action": "GET_HTML",
+      "url": "http://www.dmamyanmar.org/AllInOneCertificate/SelfVerification",
+      "output_var": "page_html"
+    },
+    {
+      "action": "EXTRACT_FROM_HTML",
+      "html": "{{page_html}}",
+      "selector": "input[name='__RequestVerificationToken']",
+      "output_var": "__RequestVerificationToken"
+    },
+    {
+      "action": "REQUEST",
+      "method": "POST",
+      "url": "http://www.dmamyanmar.org/AllInOneCertificate/Verify",
+      "params": {
+        "CrewCDCNo": "{{full_name}}",
+        "Serial": "{{cdc_number}}",
+        "ReplyEmail": "{{email}}",
+        "__RequestVerificationToken": "{{__RequestVerificationToken}}"
+      }
+    }
+  ],
+  "expected_responses": {
+    "success_keywords": [
+      "certificate",
+      "valid",
+      "found",
+      "active"
+    ],
+    "failure_keywords": [
+      "verificationerror"
+    ],
+    "contact_only_inputs": [
+      "email"
+    ]
+  },
+  "limitations": [
+    "Requires anti-forgery token obtained from the form page",
+    "Email field is required but can be auto\u2011generated (contact\u2011only)",
+    "Server may enforce additional hidden fields (IP, location) that are populated client\u2011side"
+  ],
+  "status": "TESTING"
+}
+
+WARNING:generation.post_process:Generator: wire param 'CrewCDCNo' reassigned to {{cdc_number}} (its name implies this input)
+WARNING:generation.post_process:Generator: placeholders ['email'] were not resolvable; promoted to required_inputs.
+INFO:generation.generator:Declarative generation incoherent (the declarative method could not consume its required inputs); trying SCRIPT fallback.
+INFO:utils.llm_client:LLM call: model='openai/gpt-oss-120b' endpoint='https://api.groq.com/openai/v1/chat/completions' frontier=True
+WARNING:utils.llm_client:LLM transient HTTP 429; retry 1/4 (after 52.0s)

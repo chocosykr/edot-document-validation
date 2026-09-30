@@ -1,0 +1,113 @@
+Selected: InputFiles/SID Anup-1.pdf
+
+[1/4] Running OCR...
+INFO:ocr.client:OCR cache hit for 6f862e21bf57
+[2/4] Extracting and redacting...
+       Lookup credentials captured in memory (never persisted).
+[3/4] Running validation engine...
+INFO:engine.validation_engine:Starting validation — country='India' doc_type="Seafarer's Identity Document"
+INFO:engine.validation_engine:No active method found. Checking confirmed source database.
+INFO:engine.validation_engine:No doc-type-tagged source, but 2 same-country source(s) exist — attempting source reuse via page evidence.
+INFO:engine.validation_engine:Found 2 source(s) in DB. Generating candidate method.
+INFO:generation.generator:XHR extraction gate: source_url=http://220.156.189.33/esamudraUI/jsp/examination/checker/PP_IndosChecker.jsp page_structure_present=True inline_js_present=True
+INFO:generation.xhr_contract:XHR extractor success: {"endpoint": "http://220.156.189.33/esamudraUI/checkerajaxservlet", "verb": "POST", "param_location": "query", "dynamic_params": ["txtNo", "dob", "searchType"], "static_params": {"processId": "PPIndosCheck"}}
+INFO:generation.generator:XHR extractor result: source_url=http://220.156.189.33/esamudraUI/jsp/examination/checker/PP_IndosChecker.jsp xhr_contract={'endpoint': 'http://220.156.189.33/esamudraUI/checkerajaxservlet', 'verb': 'POST', 'param_location': 'query', 'dynamic_params': ['txtNo', 'dob', 'searchType'], 'static_params': {'processId': 'PPIndosCheck'}}
+INFO:utils.llm_client:LLM call: model='gemini/gemini-2.5-flash' endpoint='https://ai.edot-solutions.com/v1/chat/completions' frontier=True
+
+[DEBUG] Narrow mapping LLM output:
+{
+  "param_mapping": {
+    "txtNo": "{{document_number}}",
+    "dob": "{{date_of_birth}}"
+  },
+  "required_inputs": [
+    "document_number",
+    "date_of_birth"
+  ],
+  "workflow_params": {
+    "searchType": "CDC"
+  }
+}
+
+INFO:validation.validator:  [Attempt 1/3] Test 'structural_check' PASSED.
+INFO:validation.validator:Method M_D9834A23 v1 passed validation.
+INFO:engine.validation_engine:Candidate M_D9834A23 passed validation. Executing.
+INFO:engine.validation_engine:Discovering response field mapping for method M_D9834A23
+INFO:validation.response_mapping:discover_field_mapping: asking LLM to map 1 response fields to 12 profile fields
+INFO:utils.llm_client:LLM call: model='gemini/gemini-2.5-flash' endpoint='https://ai.edot-solutions.com/v1/chat/completions' frontier=True
+INFO:validation.response_mapping:discover_field_mapping result: 0 text mappings, 0 image fields, 1 unmapped
+WARNING:engine.validation_engine:Discovered mapping has no usable fields for method M_D9834A23
+
+[4/4] Generating report...
+Report saved to: ./discovery_report_SID Anup-1_20260930_145310.md
+
+--- REDACTED PROFILE ---
+{
+  "document_type": "Seafarer's Identity Document",
+  "document_type_key": "SID",
+  "issuing_organization": "Directorate General of Shipping",
+  "issuing_country": "India",
+  "authorities": {
+    "issuing_authority": "Directorate General of Shipping",
+    "administering_authority": null,
+    "flag_state": "India"
+  },
+  "document_holder": {
+    "name": "[PERSON_NAME]",
+    "date_of_birth": "[DATE_OF_BIRTH]"
+  },
+  "document_numbers": [
+    "[DOCUMENT_NUMBER]"
+  ],
+  "issue_date": "20 04 2021",
+  "expiry_date": "19 04 2031",
+  "identifying_fields": {
+    "nationality": "IND",
+    "place_of_birth": "KHURDI",
+    "sex": "M",
+    "identifying_characteristics": "SCAR ON RIGHT CHEEK",
+    "place_of_issue": "MUMBAI",
+    "issuing_authority_contact_location": "MUMBAI",
+    "issuing_authority_phone_number": "+91-22-22697971/72"
+  },
+  "missing_or_unclear_fields": [],
+  "inconsistencies": [],
+  "source_discovery_hints": [
+    "www.dgshipping.gov.in"
+  ],
+  "redaction_summary": {
+    "fields_redacted": [
+      "document_holder.name",
+      "document_holder.date_of_birth",
+      "document_numbers"
+    ],
+    "pii_present": true
+  }
+}
+
+--- VALIDATION DECISION ---
+{
+  "document_result": "INVALID",
+  "evidence_quality": "HIGH",
+  "decision_status": "REJECTED",
+  "evidence": {
+    "http_status": 200,
+    "response_length": 228,
+    "method_type": "HTTP",
+    "comparison": "no_match",
+    "field_scores": {
+      "document_number": 1.5037593984962405,
+      "date_of_birth": 2.985074626865669,
+      "full_name": 11.764705882352944
+    },
+    "extracted_fields": {
+      "response_text": "our database could not find the match of cdc no. you are looking for,please contact to the concerned shipping master office."
+    }
+  },
+  "method_id": "M_D9834A23",
+  "method_type": "HTTP",
+  "source_url": "http://220.156.189.33/esamudraUI/checkerajaxservlet",
+  "raw_response": "<table  align='center'  width='85%' border='2'><tr><td width='100%' class='newStrip' >Our Database could not find the match of CDC No. you are looking for,Please contact to the concerned Shipping Master Office.</td></tr></table>",
+  "failure_reason": null,
+  "timestamp": "2026-09-30T09:23:10.166989+00:00"
+}

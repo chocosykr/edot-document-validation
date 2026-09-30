@@ -1,0 +1,117 @@
+Selected: InputFiles/INDOS (20).pdf
+
+[1/4] Running OCR...
+INFO:ocr.client:OCR cache hit for 9febed3151d6
+[2/4] Extracting and redacting...
+       Lookup credentials captured in memory (never persisted).
+[3/4] Running validation engine...
+INFO:engine.validation_engine:Starting validation — country='INDIA' doc_type='INDOS Certificate'
+INFO:engine.validation_engine:No active method found. Checking confirmed source database.
+INFO:engine.validation_engine:Found 1 source(s) in DB. Generating candidate method.
+INFO:generation.generator:XHR extraction gate: source_url=http://220.156.189.33/esamudraUI/jsp/examination/checker/PP_IndosChecker.jsp page_structure_present=True inline_js_present=True
+INFO:generation.xhr_contract:XHR extractor success: {"endpoint": "http://220.156.189.33/esamudraUI/checkerajaxservlet", "verb": "POST", "param_location": "query", "dynamic_params": ["txtNo", "dob", "searchType"], "static_params": {"processId": "PPIndosCheck"}}
+INFO:generation.generator:XHR extractor result: source_url=http://220.156.189.33/esamudraUI/jsp/examination/checker/PP_IndosChecker.jsp xhr_contract={'endpoint': 'http://220.156.189.33/esamudraUI/checkerajaxservlet', 'verb': 'POST', 'param_location': 'query', 'dynamic_params': ['txtNo', 'dob', 'searchType'], 'static_params': {'processId': 'PPIndosCheck'}}
+INFO:utils.llm_client:LLM call: model='gemini/gemini-2.5-flash' endpoint='https://ai.edot-solutions.com/v1/chat/completions' frontier=True
+
+[DEBUG] Narrow mapping LLM output:
+{
+  "param_mapping": {
+    "txtNo": "{{document_number}}",
+    "dob": "{{date_of_birth}}"
+  },
+  "required_inputs": [
+    "document_number",
+    "date_of_birth",
+    "document_type_key"
+  ],
+  "workflow_params": {
+    "searchType": "PP"
+  }
+}
+
+INFO:validation.validator:  [Attempt 1/3] Test 'structural_check' PASSED.
+INFO:validation.validator:Method M_4D0033A2 v1 passed validation.
+INFO:engine.validation_engine:Candidate M_4D0033A2 passed validation. Executing.
+INFO:engine.validation_engine:Discovering response field mapping for method M_4D0033A2
+INFO:validation.response_mapping:discover_field_mapping: asking LLM to map 1 response fields to 4 profile fields
+INFO:utils.llm_client:LLM call: model='gemini/gemini-2.5-flash' endpoint='https://ai.edot-solutions.com/v1/chat/completions' frontier=True
+INFO:validation.response_mapping:discover_field_mapping result: 0 text mappings, 0 image fields, 1 unmapped
+WARNING:engine.validation_engine:Discovered mapping has no usable fields for method M_4D0033A2
+
+[4/4] Generating report...
+Report saved to: ./discovery_report_INDOS (20)_20260930_125807.md
+
+--- REDACTED PROFILE ---
+{
+  "document_type": "INDOS Certificate",
+  "document_type_key": "INDOS_CERTIFICATE",
+  "issuing_organization": "GOVERNMENT OF INDIA",
+  "issuing_country": "INDIA",
+  "authorities": {
+    "issuing_authority": "Lal Bahadur Shastri College of Advanced Maritime Studies & Research",
+    "administering_authority": null,
+    "flag_state": null
+  },
+  "document_holder": {
+    "name": "[PERSON_NAME]",
+    "date_of_birth": "[DATE_OF_BIRTH]"
+  },
+  "document_numbers": [
+    {
+      "type": "INDOS",
+      "value": "[DOCUMENT_NUMBER]"
+    }
+  ],
+  "issue_date": "19-NOV-09",
+  "expiry_date": null,
+  "identifying_fields": {},
+  "missing_or_unclear_fields": [
+    {
+      "field": "cdc_number",
+      "reason": "missing_or_unclear",
+      "original_value": "--------"
+    },
+    {
+      "field": "passport_number",
+      "reason": "missing_or_unclear",
+      "original_value": "------"
+    }
+  ],
+  "inconsistencies": [],
+  "source_discovery_hints": [],
+  "redaction_summary": {
+    "fields_redacted": [
+      "document_holder.name",
+      "document_holder.date_of_birth",
+      "document_numbers[0].value"
+    ],
+    "pii_present": true
+  }
+}
+
+--- VALIDATION DECISION ---
+{
+  "document_result": "INVALID",
+  "evidence_quality": "HIGH",
+  "decision_status": "REJECTED",
+  "evidence": {
+    "http_status": 200,
+    "response_length": 225,
+    "method_type": "HTTP",
+    "comparison": "no_match",
+    "field_scores": {
+      "document_number": 3.100775193798455,
+      "date_of_birth": 0.0,
+      "full_name": 10.606060606060607
+    },
+    "extracted_fields": {
+      "response_text": "our database could not find the match of passport no. you are looking for,please update passport no. in seafarer profile."
+    }
+  },
+  "method_id": "M_4D0033A2",
+  "method_type": "HTTP",
+  "source_url": "http://220.156.189.33/esamudraUI/checkerajaxservlet",
+  "raw_response": "<table  align='center'  width='85%' border='2'><tr><td width='100%' class='newStrip' >Our Database could not find the match of Passport No. you are looking for,Please update Passport No. in seafarer profile.</td></tr></table>",
+  "failure_reason": null,
+  "timestamp": "2026-09-30T07:28:07.142127+00:00"
+}

@@ -1,6 +1,7 @@
 import os
 import json
 import re
+import time
 import urllib.request
 import urllib.error
 import logging
@@ -16,31 +17,158 @@ LLM_URL = os.getenv("LLM_URL", "https://ai.edot-solutions.com/v1/chat/completion
 LLM_MODEL = os.getenv("LLM_MODEL", "AI_Local")
 LLM_API_KEY = os.getenv("LLM_API_KEY", "")
 
+# Frontier mode (used when USE_LOCAL_LLM_ONLY is explicitly false) targets the
+# SAME gateway as the local model — one URL, one API key — and only swaps the
+# model name. `LLM_URL` serves both `AI_Local` (local) and
+# `gemini/gemini-2.5-flash` (hosted frontier), so no second provider or key is
+# needed.
+FRONTIER_LLM_MODEL = os.getenv("FRONTIER_LLM_MODEL", "gemini/gemini-2.5-flash")
 
-def get_llm_config() -> Dict[str, Any]:
-    """Single source of truth for the local/frontier model-selection toggle.
 
-    EVERY LLM call site in the codebase must resolve its request config here
-    instead of reading the env itself, so the `.env` toggle drives them all
-    identically:
-
-      - The ENDPOINT never changes: it is always ``LLM_URL``.
-      - ``LLM_MODEL`` is the switch: ``"AI_Local"`` selects local mode, a
-        frontier model name (e.g. ``"gemini/gemini-2.5-flash"``) selects
-        frontier mode. Same endpoint, different model in the payload.
-      - There are no external providers and no fallback chain: this client
-        only ever calls ``LLM_URL``. ``USE_LOCAL_LLM_ONLY`` is surfaced for
-        callers/reporting but nothing escalates to a different model.
-
-    Values are read at CALL time, not import time, so a process that changes
-    the env before calling (or a test that sets the toggle) is honoured.
-    """
+def _local_config() -> Dict[str, Any]:
     return {
         "url": os.getenv("LLM_URL") or LLM_URL,
         "model": os.getenv("LLM_MODEL") or LLM_MODEL or "AI_Local",
         "api_key": os.getenv("LLM_API_KEY") or LLM_API_KEY,
-        "use_local_only": os.getenv("USE_LOCAL_LLM_ONLY", "false").lower() == "true",
     }
+
+
+def _frontier_config() -> Dict[str, Any]:
+    """Frontier config: the local gateway with a different model name.
+
+    The gateway at ``LLM_URL`` exposes both the local model (``AI_Local``) and
+    the hosted frontier model (``gemini/gemini-2.5-flash``) behind one URL and
+    one API key, so frontier mode only swaps ``LLM_MODEL`` for
+    ``FRONTIER_LLM_MODEL``. ``FRONTIER_LLM_URL`` / ``FRONTIER_LLM_API_KEY``
+    remain overrides for pointing at a genuinely different provider, but the
+    default keeps everything on the same endpoint as local.
+    """
+    return {
+        "url": os.getenv("FRONTIER_LLM_URL") or os.getenv("LLM_URL") or LLM_URL,
+        "model": os.getenv("FRONTIER_LLM_MODEL") or FRONTIER_LLM_MODEL,
+        "api_key": (
+            os.getenv("FRONTIER_LLM_API_KEY")
+            or os.getenv("LLM_API_KEY")
+            or LLM_API_KEY
+        ),
+    }
+
+
+def get_llm_config() -> Dict[str, Any]:
+    """Single source of truth for the local/frontier model selection.
+
+    EVERY LLM call site resolves its request config here so one `.env` switch
+    drives them all:
+
+      - ``USE_LOCAL_LLM_ONLY=true``  -> LOCAL mode: ``LLM_URL`` + ``LLM_MODEL``
+        (``AI_Local``).
+      - ``USE_LOCAL_LLM_ONLY=false`` -> FRONTIER mode: the SAME ``LLM_URL``
+        gateway with ``FRONTIER_LLM_MODEL`` (default ``gemini/gemini-2.5-flash``)
+        and the same ``LLM_API_KEY``. ``FRONTIER_LLM_URL`` /
+        ``FRONTIER_LLM_MODEL`` / ``FRONTIER_LLM_API_KEY`` override the triple.
+
+    Unset (or any value other than an explicit false) keeps the historical
+    LOCAL behaviour, so the switch is opt-in.
+
+    Values are read at CALL time, not import time, so a process that changes
+    the env before calling (or a test that sets the toggle) is honoured.
+
+    Returns ``is_frontier`` so callers can scrub PII before anything leaves
+    the machine (local never needs it; frontier always does).
+    """
+    raw_toggle = (os.getenv("USE_LOCAL_LLM_ONLY", "true") or "").strip().lower()
+    use_frontier = raw_toggle in ("false", "0", "no", "off")
+    config = _frontier_config() if use_frontier else _local_config()
+    config["use_local_only"] = not use_frontier
+    config["is_frontier"] = use_frontier
+    return config
+
+
+# Transient provider failures (rate limits, gateway/overload) are retried with
+# backoff; a definitive 4xx is not. Frontier endpoints return 503 under load
+# (observed live on Gemini), which otherwise aborts an entire run.
+_TRANSIENT_HTTP = {408, 409, 429, 500, 502, 503, 504}
+
+
+def _should_scrub(config: Dict[str, Any]) -> bool:
+    """Scrub PII on frontier calls unless explicitly disabled.
+
+    Default is ON (safe): PII never leaves the machine in frontier mode. Set
+    ``DVS_SCRUB_FRONTIER=false`` to let frontier calls see real values — needed
+    by the response-field mapping / ambiguous-band judge, which compare the
+    document's actual values against the registry response.
+    """
+    if not config.get("is_frontier"):
+        return False
+    return os.getenv("DVS_SCRUB_FRONTIER", "true").strip().lower() != "false"
+
+
+def _backoff(attempt: int) -> None:
+    time.sleep(min(30.0, 1.5 * (2 ** (attempt - 1))))
+
+
+def _post_chat(url: str, headers: dict, payload: dict, timeout: int = 60) -> Optional[str]:
+    """POST an OpenAI-compatible chat payload; retry transient failures.
+
+    Returns the assistant message content, or None after exhausting retries or
+    on a definitive (non-transient) failure.
+    """
+    attempts = max(1, int(os.getenv("LLM_MAX_ATTEMPTS", "4")))
+    for attempt in range(1, attempts + 1):
+        req = urllib.request.Request(
+            url,
+            data=json.dumps(payload).encode("utf-8"),
+            headers=headers,
+            method="POST",
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=timeout) as response:
+                data = json.loads(response.read().decode("utf-8"))
+            return (data["choices"][0]["message"]["content"] or "").strip()
+        except urllib.error.HTTPError as e:
+            if e.code in _TRANSIENT_HTTP and attempt < attempts:
+                # Honour the provider's Retry-After when present (frontier
+                # endpoints return it on 429); otherwise exponential backoff.
+                retry_after = None
+                try:
+                    retry_after = e.headers.get("Retry-After") if e.headers else None
+                except Exception:
+                    retry_after = None
+                delay = None
+                try:
+                    delay = float(retry_after) if retry_after else None
+                except (TypeError, ValueError):
+                    delay = None
+                logger.warning(
+                    "LLM transient HTTP %s; retry %d/%d (after %ss)",
+                    e.code, attempt, attempts, delay if delay else "backoff",
+                )
+                if delay and delay > 0:
+                    time.sleep(min(30.0, delay))
+                else:
+                    _backoff(attempt)
+                continue
+            body = ""
+            try:
+                body = e.read().decode("utf-8", errors="replace")[:200]
+            except Exception:
+                pass
+            logger.warning("LLM HTTP Error: %s %s %s", e.code, e.reason, body)
+            return None
+        except (urllib.error.URLError, TimeoutError) as e:
+            if attempt < attempts:
+                logger.warning(
+                    "LLM network error (%s); retry %d/%d",
+                    getattr(e, "reason", e), attempt, attempts,
+                )
+                _backoff(attempt)
+                continue
+            logger.warning("LLM URL Error: %s", getattr(e, "reason", e))
+            return None
+        except Exception as e:
+            logger.warning("LLM unexpected error: %s", e)
+            return None
+    return None
 
 
 def _extract_json(text: str) -> Optional[Dict[str, Any]]:
@@ -116,7 +244,14 @@ def generate_json(system_prompt: str, user_prompt: str) -> Optional[Dict[str, An
     model = config["model"]
     api_key = config["api_key"]
 
-    logger.info("LLM call: model=%r endpoint=%r", model, url)
+    # Frontier mode sends data off the machine — scrub PII first (unless the
+    # operator opted out via DVS_SCRUB_FRONTIER=false). Local is not scrubbed.
+    if _should_scrub(config):
+        from utils.log_scrubber import scrub_pii
+        system_prompt = scrub_pii(system_prompt)
+        user_prompt = scrub_pii(user_prompt)
+
+    logger.info("LLM call: model=%r endpoint=%r frontier=%s", model, url, config["is_frontier"])
 
     if not url or not api_key:
         logger.error("LLM endpoint or API key is not configured; no call made.")
@@ -137,25 +272,8 @@ def generate_json(system_prompt: str, user_prompt: str) -> Optional[Dict[str, An
         "temperature": 0.1,
     }
 
-    req = urllib.request.Request(
-        url,
-        data=json.dumps(payload).encode("utf-8"),
-        headers=headers,
-        method="POST"
-    )
-
-    try:
-        with urllib.request.urlopen(req, timeout=60) as response:
-            response_data = json.loads(response.read().decode("utf-8"))
-        content = response_data["choices"][0]["message"]["content"].strip()
-    except urllib.error.HTTPError as e:
-        logger.warning(f"LLM HTTP Error: {e.code} {e.reason}\n{e.read().decode('utf-8')}")
-        return None
-    except urllib.error.URLError as e:
-        logger.warning(f"LLM URL Error: {e.reason}")
-        return None
-    except Exception as e:
-        logger.warning(f"LLM unexpected error: {e}")
+    content = _post_chat(url, headers, payload)
+    if content is None:
         return None
 
     result = _extract_json(content)
@@ -181,7 +299,14 @@ def vision_call(prompt: str, img_b64: str, timeout_s: int = 30) -> str:
         logger.warning("vision_call skipped: LLM_URL/LLM_API_KEY not set")
         return ""
 
-    logger.info("vision_call: model=%r endpoint=%r", config["model"], config["url"])
+    if _should_scrub(config):
+        from utils.log_scrubber import scrub_pii
+        prompt = scrub_pii(prompt)
+
+    logger.info(
+        "vision_call: model=%r endpoint=%r frontier=%s",
+        config["model"], config["url"], config["is_frontier"],
+    )
 
     payload = {
         "model": config["model"],
@@ -197,21 +322,17 @@ def vision_call(prompt: str, img_b64: str, timeout_s: int = 30) -> str:
         "max_tokens": 50,
     }
 
-    req = urllib.request.Request(
+    content = _post_chat(
         config["url"],
-        data=json.dumps(payload).encode("utf-8"),
-        headers={
+        {
             "Content-Type": "application/json",
             "Authorization": f"Bearer {config['api_key']}",
         },
-        method="POST",
+        payload,
+        timeout=max(1, int(timeout_s)),
     )
-
-    try:
-        with urllib.request.urlopen(req, timeout=max(1, int(timeout_s))) as response:
-            data = json.loads(response.read().decode("utf-8"))
-        return (data["choices"][0]["message"]["content"] or "").strip()
-    except Exception as e:
-        logger.warning(f"vision_call failed: {e}")
+    if content is None:
+        logger.warning("vision_call failed after retries")
         return ""
+    return content
 

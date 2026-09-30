@@ -1,0 +1,19 @@
+Selected: InputFiles/ANUP CDC ALL PAGES.pdf
+
+[1/4] Running OCR...
+INFO:ocr.client:OCR cache hit for 3aba6672d46d
+[2/4] Extracting and redacting...
+Traceback (most recent call last):
+  File "/home/suyash-khobrekar/Desktop/programming/internship_work/document_validation_system/_frontier_runner.py", line 17, in <module>
+    main.main()
+  File "/home/suyash-khobrekar/Desktop/programming/internship_work/document_validation_system/main.py", line 208, in main
+    decision, decision_dict, credentials = validate_one_document(document_path)
+                                           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/suyash-khobrekar/Desktop/programming/internship_work/document_validation_system/main.py", line 73, in validate_one_document
+    extracted = extract_and_redact(ocr_result)
+                ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/suyash-khobrekar/Desktop/programming/internship_work/document_validation_system/ocr/extractor.py", line 134, in extract_and_redact
+    response.raise_for_status()
+  File "/home/suyash-khobrekar/Desktop/programming/internship_work/document_validation_system/.venv/lib/python3.12/site-packages/requests/models.py", line 1167, in raise_for_status
+    raise HTTPError(http_error_msg, response=self)
+requests.exceptions.HTTPError: 413 Client Error: Payload Too Large for url: https://api.groq.com/openai/v1/chat/completions
